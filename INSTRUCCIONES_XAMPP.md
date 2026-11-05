@@ -17,9 +17,28 @@
 4. Presiona Enter
 5. Se abrirá la interfaz de phpMyAdmin
 
-## Paso 3: Crear la Base de Datos
+## Configuración recomendada: migraciones versionadas
 
-### Opción A: Usando el Script SQL Completo (Recomendado)
+Después de crear el archivo `.env.local` descrito en el Paso 5, usa estos comandos desde la raíz del proyecto:
+
+```bash
+# Comprueba las migraciones disponibles sin conectarse ni modificar datos
+npm run db:migrate:dry-run
+
+# Crea la base de datos si hace falta y aplica solo las migraciones pendientes
+npm run db:migrate
+
+# Consulta cuáles ya fueron aplicadas
+npm run db:migrate:status
+```
+
+El comando guarda el historial en la tabla `schema_migrations`. No edites una migración que ya se haya aplicado; para un cambio nuevo crea otro archivo numerado dentro de `scripts/migrations/`.
+
+Para instalaciones nuevas o existentes, este es el método recomendado. No combines este flujo con la ejecución manual de los scripts SQL en phpMyAdmin.
+
+## Paso 3: Crear la Base de Datos manualmente (método legado)
+
+### Opción A: Usando el Script SQL Completo
 
 1. En phpMyAdmin, haz clic en la pestaña **"SQL"** en el menú superior
 2. Copia todo el contenido del archivo `scripts/mysql_create_tables.sql`
@@ -44,9 +63,10 @@
 ## Paso 4: Verificar que las Tablas se Crearon Correctamente
 
 1. En el menú lateral izquierdo, haz clic en `cotizaciones_db`
-2. Deberías ver dos tablas:
+2. Deberías ver tres tablas:
    - **quotations** (cotizaciones)
    - **invoices** (cuentas de cobro)
+   - **free_documents** (documentos libres)
 3. Haz clic en cada tabla para ver su estructura
 
 ### Estructura de la tabla "quotations":
@@ -54,6 +74,9 @@
 
 ### Estructura de la tabla "invoices":
 - Debería tener columnas como: id, created_at, quotation_id, company_name, client_name, products, subtotal, total, payment_date, etc.
+
+### Estructura de la tabla "free_documents":
+- Debería tener columnas como: id, created_at, document_title, document_number, client_name, items, total, document_date y status.
 
 ## Paso 5: Configurar Variables de Entorno
 
@@ -117,6 +140,13 @@ DB_NAME=cotizaciones_db
 3. Selecciona "Método rápido"
 4. Haz clic en **"Continuar"**
 5. Se descargará un archivo `.sql` con tu respaldo
+
+## Actualización manual: conversión de documentos libres
+
+Si no vas a usar `npm run db:migrate` y ya tienes la base de datos creada,
+ejecuta una sola vez el archivo `scripts/004_track_free_document_conversions.sql`
+desde la pestaña **SQL** de phpMyAdmin. Esto agrega el estado de los documentos
+libres y evita que un mismo documento se convierta dos veces en cuenta de cobro.
 
 ---
 

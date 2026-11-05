@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { deleteQuotation } from "@/lib/database"
+import { serverError } from "@/lib/validations"
 
 export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -8,6 +9,6 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
     return NextResponse.json({ success: true })
   } catch (error) {
     console.error("Error deleting quotation:", error)
-    return NextResponse.json({ error: "Error al eliminar la cotización" }, { status: 500 })
+    return serverError("No se pudo eliminar la cotización")
   }
 }

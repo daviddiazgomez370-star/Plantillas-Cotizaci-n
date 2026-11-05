@@ -1,32 +1,26 @@
 import { NextResponse } from "next/server"
 import { getClients, saveClient } from "@/lib/database"
+import { clientSchema, invalidRequest, serverError } from "@/lib/validations"
 
 export async function GET() {
   try {
     const clients = await getClients()
     return NextResponse.json(clients)
-  } catch (error: any) {
+  } catch (error) {
     console.error("Error fetching clients:", error)
-    return NextResponse.json(
-      { error: error.message || "Error al obtener clientes" },
-      { status: 500 }
-    )
+    return serverError("No se pudieron obtener los clientes")
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json()
-    if (!body.name || !String(body.name).trim()) {
-      return NextResponse.json({ error: "El nombre del cliente es obligatorio" }, { status: 400 })
-    }
-    const client = await saveClient(body)
+    const parsed = clientSchema.safeParse(await request.json())
+    if (!parsed.success) return invalidRequest(parsed.error)
+
+    const client = await saveClient(parsed.data)
     return NextResponse.json(client)
-  } catch (error: any) {
+  } catch (error) {
     console.error("Error saving client:", error)
-    return NextResponse.json(
-      { error: error.message || "Error al guardar el cliente" },
-      { status: 500 }
-    )
+    return serverError("No se pudo guardar el cliente")
   }
 }

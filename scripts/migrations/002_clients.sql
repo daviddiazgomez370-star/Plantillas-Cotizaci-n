@@ -1,0 +1,13 @@
+-- Registro de clientes reutilizable.
+
+CREATE TABLE IF NOT EXISTS clients (
+  id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  name VARCHAR(255) NOT NULL,
+  nit VARCHAR(50),
+  address TEXT,
+  phone VARCHAR(50),
+  email VARCHAR(255),
+  notes TEXT,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

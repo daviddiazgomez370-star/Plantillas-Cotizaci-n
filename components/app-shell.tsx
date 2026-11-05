@@ -3,11 +3,12 @@
 import type { ReactNode } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Calculator, FileText, FolderOpen, LayoutDashboard, ReceiptText, Settings, Users } from "lucide-react"
+import { Calculator, FileText, FolderOpen, LayoutDashboard, LayoutTemplate, ReceiptText, Settings, Users } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 const navigation = [
   { href: "/", label: "Resumen", icon: LayoutDashboard },
+  { href: "/plantillas", label: "Plantillas", icon: LayoutTemplate },
   { href: "/cotizacion", label: "Cotizaciones", icon: Calculator },
   { href: "/documento-libre", label: "Documento libre", icon: FileText },
   { href: "/cuenta-cobro", label: "Cuentas de cobro", icon: ReceiptText },

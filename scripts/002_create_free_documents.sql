@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS free_documents (
 
   -- Fecha del documento
   document_date DATE,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending, converted
 
   -- Timestamps
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP

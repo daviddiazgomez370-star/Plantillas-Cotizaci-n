@@ -1,32 +1,29 @@
 import { NextResponse } from "next/server"
 import { deleteInvoice, getInvoiceById, updateInvoice } from "@/lib/database"
+import { invalidRequest, invoiceSchema, normalizeInvoiceRequest, serverError } from "@/lib/validations"
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
     const invoice = await getInvoiceById(id)
     return NextResponse.json(invoice)
-  } catch (error: any) {
+  } catch (error) {
     console.error("Error fetching invoice:", error)
-    return NextResponse.json(
-      { error: error.message || "Error al obtener la cuenta de cobro" },
-      { status: 500 }
-    )
+    return serverError("No se pudo obtener la cuenta de cobro")
   }
 }
 
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
-    const body = await request.json()
-    const invoice = await updateInvoice(id, body)
+    const parsed = invoiceSchema.safeParse(normalizeInvoiceRequest(await request.json()))
+    if (!parsed.success) return invalidRequest(parsed.error)
+
+    const invoice = await updateInvoice(id, parsed.data)
     return NextResponse.json(invoice)
-  } catch (error: any) {
+  } catch (error) {
     console.error("Error updating invoice:", error)
-    return NextResponse.json(
-      { error: error.message || "Error al actualizar la cuenta de cobro" },
-      { status: 500 }
-    )
+    return serverError("No se pudo actualizar la cuenta de cobro")
   }
 }
 
@@ -37,6 +34,6 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
     return NextResponse.json({ success: true })
   } catch (error) {
     console.error("Error deleting invoice:", error)
-    return NextResponse.json({ error: "Error al eliminar la cuenta de cobro" }, { status: 500 })
+    return serverError("No se pudo eliminar la cuenta de cobro")
   }
 }

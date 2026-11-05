@@ -1,4 +1,5 @@
 import mysql from "mysql2/promise"
+import { randomUUID } from "crypto"
 
 // Configuración de conexión a MySQL
 const dbConfig = {
@@ -33,11 +34,24 @@ export async function query<T = any>(sql: string, params?: any[]): Promise<T> {
   }
 }
 
+export async function transaction<T>(
+  callback: (connection: mysql.PoolConnection) => Promise<T>
+): Promise<T> {
+  const connection = await getPool().getConnection()
+  try {
+    await connection.beginTransaction()
+    const result = await callback(connection)
+    await connection.commit()
+    return result
+  } catch (error) {
+    await connection.rollback()
+    throw error
+  } finally {
+    connection.release()
+  }
+}
+
 // Función auxiliar para generar UUIDs en el formato correcto
 export function generateUUID(): string {
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0
-    const v = c === "x" ? r : (r & 0x3) | 0x8
-    return v.toString(16)
-  })
+  return randomUUID()
 }

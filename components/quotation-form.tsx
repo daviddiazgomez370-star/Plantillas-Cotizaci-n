@@ -10,7 +10,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { calculateProductPrice, DEFAULT_ACCESSORIES, PRODUCT_TYPES } from "@/lib/pricing"
 import { generateQuotationPDF } from "@/lib/pdf-generator"
+import { formatDate } from "@/lib/dates"
 import { ClientSelector } from "@/components/client-selector"
+import { toast } from "@/hooks/use-toast"
 import { Download, Plus, Trash2, ArrowLeft, Save } from "lucide-react"
 
 interface QuotationItem {
@@ -29,6 +31,7 @@ export function QuotationForm() {
   const [companyName, setCompanyName] = useState("")
   const [companyNit, setCompanyNit] = useState("")
   const [companyAddress, setCompanyAddress] = useState("")
+  const [companyPhone, setCompanyPhone] = useState("")
   const [companyEmail, setCompanyEmail] = useState("")
   const [clientName, setClientName] = useState("")
   const [clientNit, setClientNit] = useState("")
@@ -83,7 +86,7 @@ export function QuotationForm() {
       company_name: companyName,
       company_nit: companyNit,
       company_address: companyAddress,
-      company_phone: clientPhone,
+      company_phone: companyPhone,
       company_email: companyEmail,
       client_name: clientName,
       client_nit: clientNit,
@@ -122,17 +125,22 @@ export function QuotationForm() {
     setIsSaving(true)
     try {
       await saveQuotationToDatabase(calculateTotal())
-      alert("Cotización guardada exitosamente en el portafolio")
+      toast({ title: "Cotización guardada en el portafolio" })
       router.push("/portafolio")
     } catch (error) {
       console.error("Error:", error)
-      alert(error instanceof Error ? error.message : "Error al guardar la cotización")
+      toast({
+        title: "No se pudo guardar la cotización",
+        description: error instanceof Error ? error.message : "Inténtalo de nuevo.",
+        variant: "destructive",
+      })
     } finally {
       setIsSaving(false)
     }
   }
 
   const handleGeneratePDF = async () => {
+    console.log("[PDF] Click en Descargar PDF")
     const total = calculateTotal()
 
     const quotationData = {
@@ -150,23 +158,33 @@ export function QuotationForm() {
           pricing: calculateProductPrice(item.productType, item.width, item.height, DEFAULT_ACCESSORIES),
         })),
       total,
-      date: new Date().toLocaleDateString("es-ES"),
+      date: formatDate(new Date(), "es-ES"),
       quotationNumber: `COT-${Date.now()}`,
     }
 
-    // Genera y descarga el PDF (muestra el total del documento)
-    generateQuotationPDF(quotationData)
+    try {
+      console.log("[PDF] Datos enviados:", quotationData)
+      generateQuotationPDF(quotationData)
+    } catch (error) {
+      console.error("[PDF] Error generando PDF:", error)
+      toast({
+        title: "No se pudo descargar el PDF",
+        description: error instanceof Error ? error.message : "Inténtalo de nuevo.",
+        variant: "destructive",
+      })
+      return
+    }
 
     // Guarda la cotización en la base de datos
     try {
       await saveQuotationToDatabase(total)
     } catch (error) {
       console.error("Error al guardar la cotización:", error)
-      alert(
-        error instanceof Error
-          ? `El PDF se descargó, pero hubo un error al guardar en la base de datos: ${error.message}`
-          : "El PDF se descargó, pero hubo un error al guardar en la base de datos",
-      )
+      toast({
+        title: "El PDF se descargó, pero no se pudo guardar la cotización",
+        description: error instanceof Error ? error.message : undefined,
+        variant: "destructive",
+      })
     }
   }
 
@@ -233,6 +251,15 @@ export function QuotationForm() {
                 value={companyEmail}
                 onChange={(e) => setCompanyEmail(e.target.value)}
                 placeholder="contacto@tuempresa.com"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="companyPhone">Teléfono de tu Empresa</Label>
+              <Input
+                id="companyPhone"
+                value={companyPhone}
+                onChange={(e) => setCompanyPhone(e.target.value)}
+                placeholder="3001234567"
               />
             </div>
           </div>
@@ -546,7 +573,7 @@ export function QuotationForm() {
                 <Save className="mr-2 h-4 w-4" />
                 {isSaving ? "Guardando..." : "Guardar en Portafolio"}
               </Button>
-              <Button onClick={handleGeneratePDF} size="lg" disabled={!clientName || items.some((i) => !i.productType)}>
+              <Button type="button" onClick={handleGeneratePDF} size="lg" disabled={!clientName || items.some((i) => !i.productType)}>
                 <Download className="mr-2 h-4 w-4" />
                 Descargar PDF
               </Button>

@@ -8,7 +8,9 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { generateInvoicePDF } from "@/lib/pdf-generator"
+import { formatDate, getCurrentDateInputValue, toDateInputValue } from "@/lib/dates"
 import { ClientSelector } from "@/components/client-selector"
+import { toast } from "@/hooks/use-toast"
 import { Download, Plus, Trash2, ArrowLeft, Save } from "lucide-react"
 
 interface InvoiceItem {
@@ -16,6 +18,37 @@ interface InvoiceItem {
   description: string
   quantity: number
   unitPrice: number
+}
+
+interface InvoiceData {
+  companyName: string
+  companyId: string
+  companyAddress: string
+  companyPhone: string
+  companyEmail: string
+  clientName: string
+  clientId: string
+  clientAddress: string
+  clientPhone: string
+  clientEmail: string
+  issueDate: string
+  startDate: string
+  endDate: string
+  paymentDate: string
+  paymentTerms: string
+  items: InvoiceItem[]
+  total: number
+  date: string
+  invoiceNumber: string
+}
+
+function getInvoiceNumber(id?: string | null) {
+  const compactId = id?.replaceAll("-", "").slice(0, 8).toUpperCase()
+  return compactId ? `CC-${compactId}` : `CC-${Date.now()}`
+}
+
+function getStoredItemDescription(item: any) {
+  return item.description || item.productName || item.productType || ""
 }
 
 export function InvoiceForm() {
@@ -35,7 +68,10 @@ export function InvoiceForm() {
   const [paymentDate, setPaymentDate] = useState("")
   const [paymentTerms, setPaymentTerms] = useState("")
   const [items, setItems] = useState<InvoiceItem[]>([{ id: "1", description: "", quantity: 1, unitPrice: 0 }])
+  const [issueDate, setIssueDate] = useState(getCurrentDateInputValue)
+  const [invoiceNumber, setInvoiceNumber] = useState(getInvoiceNumber)
   const [isSaving, setIsSaving] = useState(false)
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false)
   const searchParams = useSearchParams()
   const editId = searchParams.get("id")
   const [isEditing, setIsEditing] = useState(false)
@@ -56,34 +92,38 @@ export function InvoiceForm() {
       })
       .then((inv: any) => {
         setIsEditing(true)
-        setCompanyName(inv.company_name || "")
-        setCompanyId(inv.company_nit || "")
-        setCompanyAddress(inv.company_address || "")
-        setCompanyPhone(inv.company_phone || "")
-        setCompanyEmail(inv.company_email || "")
-        setClientName(inv.client_name || "")
-        setClientId(inv.client_nit || "")
-        setClientAddress(inv.client_address || "")
-        setClientPhone(inv.client_phone || "")
-        setClientEmail(inv.client_email || "")
-        setWorkStartDate(inv.work_start_date || "")
-        setWorkEndDate(inv.work_end_date || "")
-        setPaymentDate(inv.payment_date || "")
-        setPaymentTerms(inv.payment_method || "")
+        setCompanyName(inv.company_name ?? inv.companyName ?? "")
+        setCompanyId(inv.company_nit ?? inv.companyId ?? "")
+        setCompanyAddress(inv.company_address ?? inv.companyAddress ?? "")
+        setCompanyPhone(inv.company_phone ?? inv.companyPhone ?? "")
+        setCompanyEmail(inv.company_email ?? inv.companyEmail ?? "")
+        setClientName(inv.client_name ?? inv.clientName ?? "")
+        setClientId(inv.client_nit ?? inv.clientId ?? "")
+        setClientAddress(inv.client_address ?? inv.clientAddress ?? "")
+        setClientPhone(inv.client_phone ?? inv.clientPhone ?? "")
+        setClientEmail(inv.client_email ?? inv.clientEmail ?? "")
+        setWorkStartDate(toDateInputValue(inv.work_start_date ?? inv.startDate))
+        setWorkEndDate(toDateInputValue(inv.work_end_date ?? inv.endDate))
+        setPaymentDate(toDateInputValue(inv.payment_date ?? inv.paymentDate))
+        setPaymentTerms(inv.payment_method ?? inv.paymentTerms ?? "")
+        setIssueDate(
+          toDateInputValue(inv.issue_date ?? inv.issueDate ?? inv.date ?? inv.created_at) || getCurrentDateInputValue()
+        )
+        setInvoiceNumber(inv.invoiceNumber ?? getInvoiceNumber(inv.id))
         if (Array.isArray(inv.products) && inv.products.length > 0) {
           setItems(
             inv.products.map((it: any, idx: number) => ({
               id: it.id || `${Date.now()}-${idx}`,
-              description: it.description || "",
+              description: getStoredItemDescription(it),
               quantity: it.quantity ?? 1,
-              unitPrice: it.unitPrice ?? 0,
+              unitPrice: it.unitPrice ?? it.pricing?.total ?? 0,
             }))
           )
         }
       })
       .catch((error: any) => {
         console.error("Error al cargar la cuenta de cobro:", error)
-        alert(`Error al cargar la cuenta de cobro: ${error.message}`)
+        toast({ title: "No se pudo cargar la cuenta de cobro", description: error.message, variant: "destructive" })
       })
       .finally(() => setLoadingInvoice(false))
   }, [editId])
@@ -98,42 +138,63 @@ export function InvoiceForm() {
     setItems(items.map((item) => (item.id === id ? { ...item, [field]: value } : item)))
   }
 
-  const calculateTotal = () => {
-    return items.reduce((total, item) => total + item.quantity * item.unitPrice, 0)
-  }
+  const calculateTotal = () => items.reduce((total, item) => total + item.quantity * item.unitPrice, 0)
+
+  const buildInvoiceData = (): InvoiceData => ({
+    companyName,
+    companyId,
+    companyAddress,
+    companyPhone,
+    companyEmail,
+    clientName,
+    clientId,
+    clientAddress,
+    clientPhone,
+    clientEmail,
+    issueDate,
+    startDate: workStartDate,
+    endDate: workEndDate,
+    paymentDate,
+    paymentTerms,
+    items,
+    total: calculateTotal(),
+    date: formatDate(issueDate, "es-CO"),
+    invoiceNumber,
+  })
+
+  const toApiInvoice = (invoiceData: InvoiceData) => ({
+    company_name: invoiceData.companyName,
+    company_nit: invoiceData.companyId,
+    company_address: invoiceData.companyAddress,
+    company_phone: invoiceData.companyPhone,
+    company_email: invoiceData.companyEmail,
+    client_name: invoiceData.clientName,
+    client_nit: invoiceData.clientId,
+    client_address: invoiceData.clientAddress,
+    client_phone: invoiceData.clientPhone,
+    client_email: invoiceData.clientEmail,
+    products: invoiceData.items,
+    subtotal: invoiceData.total,
+    iva: 0,
+    total: invoiceData.total,
+    issue_date: invoiceData.issueDate,
+    work_start_date: invoiceData.startDate || null,
+    work_end_date: invoiceData.endDate || null,
+    payment_date: invoiceData.paymentDate || null,
+    payment_method: invoiceData.paymentTerms,
+  })
 
   const handleSaveInvoice = async () => {
     setIsSaving(true)
     try {
-      const total = calculateTotal()
-
-      const invoiceData = {
-        company_name: companyName,
-        company_nit: companyId,
-        company_address: companyAddress,
-        company_phone: companyPhone,
-        company_email: companyEmail,
-        client_name: clientName,
-        client_nit: clientId,
-        client_address: clientAddress,
-        client_phone: clientPhone,
-        client_email: clientEmail,
-        products: items,
-        subtotal: total,
-        iva: 0,
-        total: total,
-        work_start_date: workStartDate || null,
-        work_end_date: workEndDate || null,
-        payment_date: paymentDate || null,
-        payment_method: paymentTerms,
-      }
+      const invoiceData = buildInvoiceData()
 
       const response = await fetch(
         isEditing && editId ? `/api/invoices/${editId}` : "/api/invoices",
         {
           method: isEditing && editId ? "PUT" : "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(invoiceData),
+          body: JSON.stringify(toApiInvoice(invoiceData)),
         }
       )
 
@@ -142,48 +203,53 @@ export function InvoiceForm() {
         throw new Error(errorData.error || "Error al guardar")
       }
 
-      alert(
-        isEditing
-          ? "Cuenta de cobro actualizada exitosamente"
-          : "Cuenta de cobro guardada exitosamente en el portafolio"
-      )
+      const savedInvoice = await response.json()
+      setInvoiceNumber(savedInvoice.invoiceNumber ?? getInvoiceNumber(savedInvoice.id))
+
+      toast({
+        title: isEditing ? "Cuenta de cobro actualizada" : "Cuenta de cobro guardada en el portafolio",
+      })
       router.push("/portafolio")
     } catch (error) {
       console.error("Error:", error)
-      alert(error instanceof Error ? error.message : "Error al guardar la cuenta de cobro")
+      toast({
+        title: "No se pudo guardar la cuenta de cobro",
+        description: error instanceof Error ? error.message : "Inténtalo de nuevo.",
+        variant: "destructive",
+      })
     } finally {
       setIsSaving(false)
     }
   }
 
   const handleGeneratePDF = () => {
-    const filteredItems = items.filter((item) => item.description.trim() !== "")
+    console.log("[PDF] Click en Descargar PDF")
+    setIsGeneratingPdf(true)
+    try {
+      const invoiceData = buildInvoiceData()
 
-    if (filteredItems.length === 0) {
-      alert("Debes agregar al menos un item con descripcion para generar el PDF.")
-      return
+      console.log("[PDF] Datos enviados:", invoiceData)
+      generateInvoicePDF(invoiceData)
+      toast({ title: "PDF descargado" })
+    } catch (error) {
+      console.error("[PDF] Error generando PDF:", error)
+      toast({
+        title: "No se pudo descargar el PDF",
+        description: error instanceof Error ? error.message : "Inténtalo de nuevo.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsGeneratingPdf(false)
     }
-
-    const invoiceData = {
-      companyName,
-      companyId,
-      companyAddress,
-      companyPhone,
-      companyEmail,
-      clientName,
-      clientId,
-      clientAddress,
-      clientPhone,
-      clientEmail,
-      paymentTerms,
-      items: filteredItems,
-      total: calculateTotal(),
-      date: new Date().toLocaleDateString("es-ES"),
-      invoiceNumber: `CC-${Date.now()}`,
-    }
-
-    generateInvoicePDF(invoiceData)
   }
+
+  const hasCompleteItems =
+    items.length > 0 && items.every((item) => item.description.trim() !== "" && item.quantity > 0 && item.unitPrice > 0)
+  const canGeneratePDF =
+    companyName.trim() !== "" &&
+    clientName.trim() !== "" &&
+    hasCompleteItems
+  const canSaveInvoice = companyName.trim() !== "" && companyId.trim() !== "" && clientName.trim() !== "" && hasCompleteItems
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -323,7 +389,25 @@ export function InvoiceForm() {
               />
             </div>
           </div>
-          <div className="grid gap-4 md:grid-cols-3">
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Fechas y Forma de Pago</CardTitle>
+          <CardDescription>Define el periodo del trabajo y cómo se realizará el pago</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-4">
+            <div className="space-y-2">
+              <Label htmlFor="issueDate">Fecha de emisión</Label>
+              <Input
+                id="issueDate"
+                type="date"
+                value={issueDate}
+                onChange={(e) => setIssueDate(e.target.value)}
+              />
+            </div>
             <div className="space-y-2">
               <Label htmlFor="workStartDate">Fecha de Inicio del Trabajo</Label>
               <Input
@@ -358,7 +442,7 @@ export function InvoiceForm() {
               id="paymentTerms"
               value={paymentTerms}
               onChange={(e) => setPaymentTerms(e.target.value)}
-              placeholder="Transferencia bancaria - 50% anticipo, 50% contra entrega"
+              placeholder="Ej.: Transferencia bancaria, efectivo o cuenta bancaria"
             />
           </div>
         </CardContent>
@@ -375,7 +459,7 @@ export function InvoiceForm() {
               <div className="flex items-center justify-between">
                 <h3 className="font-semibold text-foreground">Item {index + 1}</h3>
                 {items.length > 1 && (
-                  <Button variant="ghost" size="icon" onClick={() => removeItem(item.id)}>
+                  <Button type="button" variant="ghost" size="icon" onClick={() => removeItem(item.id)} aria-label={`Eliminar ítem ${index + 1}`}>
                     <Trash2 className="h-4 w-4" />
                   </Button>
                 )}
@@ -398,6 +482,7 @@ export function InvoiceForm() {
                     onChange={(e) => updateItem(item.id, "quantity", Number.parseInt(e.target.value) || 1)}
                     placeholder="1"
                     min="1"
+                    step="1"
                   />
                 </div>
                 <div className="space-y-2">
@@ -407,20 +492,20 @@ export function InvoiceForm() {
                     value={item.unitPrice || ""}
                     onChange={(e) => updateItem(item.id, "unitPrice", Number.parseFloat(e.target.value) || 0)}
                     placeholder="250000"
+                    min="0"
+                    step="0.01"
                   />
                 </div>
               </div>
-              {item.unitPrice > 0 && (
-                <div className="rounded-lg bg-muted p-3">
-                  <div className="flex justify-between font-semibold">
-                    <span>Subtotal:</span>
-                    <span className="text-accent">${(item.quantity * item.unitPrice).toLocaleString("es-CO")}</span>
-                  </div>
+              <div className="rounded-lg bg-muted p-3">
+                <div className="flex justify-between font-semibold">
+                  <span>Subtotal:</span>
+                  <span className="text-accent">${(item.quantity * item.unitPrice).toLocaleString("es-CO")}</span>
                 </div>
-              )}
+              </div>
             </div>
           ))}
-          <Button variant="outline" onClick={addItem} className="w-full bg-transparent">
+          <Button type="button" variant="outline" onClick={addItem} className="w-full bg-transparent">
             <Plus className="mr-2 h-4 w-4" />
             Agregar Item
           </Button>
@@ -438,7 +523,7 @@ export function InvoiceForm() {
               <Button
                 onClick={handleSaveInvoice}
                 size="lg"
-                disabled={!companyName || !clientName || items.some((i) => !i.description || !i.unitPrice) || isSaving}
+                disabled={!canSaveInvoice || isSaving}
                 variant="outline"
               >
                 <Save className="mr-2 h-4 w-4" />
@@ -446,11 +531,12 @@ export function InvoiceForm() {
               </Button>
               <Button
                 onClick={handleGeneratePDF}
+                type="button"
                 size="lg"
-                disabled={!companyName || !clientName || items.some((i) => !i.description || !i.unitPrice)}
+                disabled={!canGeneratePDF || isGeneratingPdf}
               >
                 <Download className="mr-2 h-4 w-4" />
-                Descargar PDF
+                {isGeneratingPdf ? "Generando PDF..." : "Descargar PDF"}
               </Button>
             </div>
           </div>

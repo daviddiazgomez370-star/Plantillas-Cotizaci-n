@@ -8,8 +8,19 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { ArrowLeft, Loader2, Plus, Save, Trash2, AlertCircle, Users } from "lucide-react"
 import type { Client } from "@/lib/database"
+import { toast } from "@/hooks/use-toast"
 
 const emptyForm = {
   name: "",
@@ -26,6 +37,7 @@ export function ClientsView() {
   const [dbError, setDbError] = useState<string | null>(null)
   const [form, setForm] = useState(emptyForm)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [clientToDelete, setClientToDelete] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   const fetchClients = useCallback(async () => {
@@ -61,7 +73,7 @@ export function ClientsView() {
 
   const handleSave = async () => {
     if (!form.name.trim()) {
-      alert("El nombre del cliente es obligatorio.")
+      toast({ title: "El nombre del cliente es obligatorio", variant: "destructive" })
       return
     }
 
@@ -78,12 +90,12 @@ export function ClientsView() {
         throw new Error(errorData.error || "Error al guardar el cliente")
       }
 
-      alert(editingId ? "Cliente actualizado exitosamente." : "Cliente registrado exitosamente.")
+      toast({ title: editingId ? "Cliente actualizado" : "Cliente registrado" })
       resetForm()
       fetchClients()
     } catch (error: any) {
       console.error("Error al guardar:", error)
-      alert(`Error al guardar: ${error.message}`)
+      toast({ title: "No se pudo guardar el cliente", description: error.message, variant: "destructive" })
     } finally {
       setSaving(false)
     }
@@ -103,14 +115,13 @@ export function ClientsView() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Estas seguro de eliminar este cliente?")) return
     try {
       const res = await fetch(`/api/clients/${id}`, { method: "DELETE" })
       if (!res.ok) throw new Error("Error al eliminar")
       fetchClients()
     } catch (error) {
       console.error("Error:", error)
-      alert("Error al eliminar el cliente")
+      toast({ title: "No se pudo eliminar el cliente", variant: "destructive" })
     }
   }
 
@@ -264,7 +275,7 @@ export function ClientsView() {
                           <Button size="sm" variant="outline" onClick={() => handleEdit(client)}>
                             Editar
                           </Button>
-                          <Button size="sm" variant="destructive" onClick={() => handleDelete(client.id)}>
+                          <Button size="sm" variant="destructive" onClick={() => setClientToDelete(client.id)}>
                             <Trash2 className="h-3 w-3" />
                           </Button>
                         </div>
@@ -277,6 +288,31 @@ export function ClientsView() {
           )}
         </CardContent>
       </Card>
+
+      <AlertDialog open={Boolean(clientToDelete)} onOpenChange={(open) => !open && setClientToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar cliente?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta acción no se puede deshacer. El cliente se eliminará permanentemente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (clientToDelete) {
+                  handleDelete(clientToDelete)
+                }
+                setClientToDelete(null)
+              }}
+            >
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

@@ -1,29 +1,31 @@
 import { NextResponse } from "next/server"
-import { saveInvoice, getInvoices } from "@/lib/database"
+import { getInvoices, saveInvoice, saveInvoiceFromFreeDocument } from "@/lib/database"
+import { invalidRequest, invoiceSchema, normalizeInvoiceRequest, serverError } from "@/lib/validations"
 
 export async function GET() {
   try {
     const invoices = await getInvoices()
     return NextResponse.json(invoices)
-  } catch (error: any) {
+  } catch (error) {
     console.error("Error fetching invoices:", error)
-    return NextResponse.json(
-      { error: error.message || "Error al obtener cuentas de cobro" },
-      { status: 500 }
-    )
+    return serverError("No se pudieron obtener las cuentas de cobro")
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json()
-    const invoice = await saveInvoice(body)
+    const parsed = invoiceSchema.safeParse(normalizeInvoiceRequest(await request.json()))
+    if (!parsed.success) return invalidRequest(parsed.error)
+
+    const invoice = parsed.data.free_document_id
+      ? await saveInvoiceFromFreeDocument(parsed.data)
+      : await saveInvoice(parsed.data)
     return NextResponse.json(invoice)
-  } catch (error: any) {
+  } catch (error) {
     console.error("Error saving invoice:", error)
-    return NextResponse.json(
-      { error: error.message || "Error al guardar la cuenta de cobro" },
-      { status: 500 }
-    )
+    if (error instanceof Error && error.message === "Este documento libre ya fue convertido en una cuenta de cobro") {
+      return NextResponse.json({ error: error.message }, { status: 409 })
+    }
+    return serverError("No se pudo guardar la cuenta de cobro")
   }
 }

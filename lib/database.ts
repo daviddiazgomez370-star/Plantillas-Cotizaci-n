@@ -1,4 +1,4 @@
-import { query, generateUUID } from "./mysql"
+import { query, generateUUID, transaction } from "./mysql"
 
 export type QuotationStatus = "pending" | "approved" | "converted" | "cancelled"
 
@@ -33,6 +33,7 @@ export interface Invoice {
   id: string
   created_at: string
   quotation_id?: string
+  free_document_id?: string
   company_name: string
   company_nit: string
   company_address?: string
@@ -48,6 +49,7 @@ export interface Invoice {
   iva: number
   total: number
   work_description?: string
+  issue_date?: string
   work_start_date?: string
   work_end_date?: string
   payment_date?: string
@@ -134,16 +136,17 @@ export async function saveInvoice(invoice: Omit<Invoice, "id" | "created_at" | "
 
   const sql = `
     INSERT INTO invoices (
-      id, quotation_id, company_name, company_nit, company_address, company_phone, company_email,
+      id, quotation_id, free_document_id, company_name, company_nit, company_address, company_phone, company_email,
       client_name, client_nit, client_address, client_phone, client_email,
       products, subtotal, iva, total, work_description, work_start_date, work_end_date,
-      payment_date, payment_method, pdf_url
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      issue_date, payment_date, payment_method, pdf_url
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
 
   await query(sql, [
     id,
     invoice.quotation_id || null,
+    invoice.free_document_id || null,
     invoice.company_name,
     invoice.company_nit,
     invoice.company_address || null,
@@ -161,6 +164,7 @@ export async function saveInvoice(invoice: Omit<Invoice, "id" | "created_at" | "
     invoice.work_description || null,
     invoice.work_start_date || null,
     invoice.work_end_date || null,
+    invoice.issue_date || null,
     invoice.payment_date || null,
     invoice.payment_method || null,
     invoice.pdf_url || null,
@@ -169,40 +173,108 @@ export async function saveInvoice(invoice: Omit<Invoice, "id" | "created_at" | "
   return getInvoiceById(id)
 }
 
+export async function saveInvoiceFromFreeDocument(
+  invoice: Omit<Invoice, "id" | "created_at" | "updated_at">
+) {
+  if (!invoice.free_document_id) {
+    throw new Error("Falta el documento libre de origen")
+  }
+
+  const id = generateUUID()
+  const productsJson = JSON.stringify(invoice.products)
+
+  await transaction(async (connection) => {
+    const [documents] = await connection.execute<any[]>(
+      "SELECT status FROM free_documents WHERE id = ? FOR UPDATE",
+      [invoice.free_document_id]
+    )
+    const document = documents[0]
+
+    if (!document) {
+      throw new Error("El documento libre no existe")
+    }
+    if (document.status === "converted") {
+      throw new Error("Este documento libre ya fue convertido en una cuenta de cobro")
+    }
+
+    await connection.execute(
+      `INSERT INTO invoices (
+        id, quotation_id, free_document_id, company_name, company_nit, company_address, company_phone, company_email,
+        client_name, client_nit, client_address, client_phone, client_email,
+        products, subtotal, iva, total, work_description, work_start_date, work_end_date,
+        issue_date, payment_date, payment_method, pdf_url
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        invoice.quotation_id || null,
+        invoice.free_document_id,
+        invoice.company_name,
+        invoice.company_nit,
+        invoice.company_address || null,
+        invoice.company_phone || null,
+        invoice.company_email || null,
+        invoice.client_name,
+        invoice.client_nit || null,
+        invoice.client_address || null,
+        invoice.client_phone || null,
+        invoice.client_email || null,
+        productsJson,
+        invoice.subtotal,
+        invoice.iva,
+        invoice.total,
+        invoice.work_description || null,
+        invoice.work_start_date || null,
+        invoice.work_end_date || null,
+        invoice.issue_date || null,
+        invoice.payment_date || null,
+        invoice.payment_method || null,
+        invoice.pdf_url || null,
+      ]
+    )
+
+    await connection.execute(
+      "UPDATE free_documents SET status = 'converted', updated_at = NOW() WHERE id = ?",
+      [invoice.free_document_id]
+    )
+  })
+
+  return getInvoiceById(id)
+}
+
 export async function updateInvoice(id: string, invoice: Partial<Invoice>) {
-  const productsJson = JSON.stringify(invoice.products || [])
+  const productsJson = JSON.stringify(invoice.products ?? [])
 
   const sql = `
     UPDATE invoices SET
-      quotation_id = ?, company_name = ?, company_nit = ?, company_address = ?, company_phone = ?, company_email = ?,
+      company_name = ?, company_nit = ?, company_address = ?, company_phone = ?, company_email = ?,
       client_name = ?, client_nit = ?, client_address = ?, client_phone = ?, client_email = ?,
       products = ?, subtotal = ?, iva = ?, total = ?, work_description = ?, work_start_date = ?, work_end_date = ?,
-      payment_date = ?, payment_method = ?,
+      issue_date = ?, payment_date = ?, payment_method = ?,
       updated_at = NOW()
     WHERE id = ?
   `
 
   await query(sql, [
-    invoice.quotation_id || null,
-    invoice.company_name || "",
-    invoice.company_nit || "",
-    invoice.company_address || null,
-    invoice.company_phone || null,
-    invoice.company_email || null,
-    invoice.client_name || "",
-    invoice.client_nit || null,
-    invoice.client_address || null,
-    invoice.client_phone || null,
-    invoice.client_email || null,
+    invoice.company_name ?? "",
+    invoice.company_nit ?? "",
+    invoice.company_address ?? null,
+    invoice.company_phone ?? null,
+    invoice.company_email ?? null,
+    invoice.client_name ?? "",
+    invoice.client_nit ?? null,
+    invoice.client_address ?? null,
+    invoice.client_phone ?? null,
+    invoice.client_email ?? null,
     productsJson,
-    invoice.subtotal || 0,
-    invoice.iva || 0,
-    invoice.total || 0,
-    invoice.work_description || null,
-    invoice.work_start_date || null,
-    invoice.work_end_date || null,
-    invoice.payment_date || null,
-    invoice.payment_method || null,
+    invoice.subtotal ?? 0,
+    invoice.iva ?? 0,
+    invoice.total ?? 0,
+    invoice.work_description ?? null,
+    invoice.work_start_date ?? null,
+    invoice.work_end_date ?? null,
+    invoice.issue_date ?? null,
+    invoice.payment_date ?? null,
+    invoice.payment_method ?? null,
     id,
   ])
 
@@ -246,6 +318,8 @@ export async function deleteInvoice(id: string) {
 
 // ---- Documentos Libres ----
 
+export type FreeDocumentStatus = "pending" | "converted"
+
 export interface FreeDocument {
   id: string
   created_at: string
@@ -268,10 +342,11 @@ export interface FreeDocument {
   warranty_months?: number
   notes?: string
   document_date?: string
+  status: FreeDocumentStatus
   updated_at: string
 }
 
-export async function saveFreeDocument(doc: Omit<FreeDocument, "id" | "created_at" | "updated_at">) {
+export async function saveFreeDocument(doc: Omit<FreeDocument, "id" | "created_at" | "updated_at" | "status">) {
   const id = generateUUID()
   const itemsJson = JSON.stringify(doc.items)
 
@@ -288,7 +363,7 @@ export async function saveFreeDocument(doc: Omit<FreeDocument, "id" | "created_a
   await query(sql, [
     id,
     doc.document_title,
-    doc.document_number || null,
+    doc.document_number || `DOC-${id.replaceAll("-", "").slice(0, 8).toUpperCase()}`,
     doc.company_name,
     doc.company_nit || null,
     doc.company_address || null,
@@ -302,8 +377,8 @@ export async function saveFreeDocument(doc: Omit<FreeDocument, "id" | "created_a
     doc.general_description || null,
     itemsJson,
     doc.total,
-    doc.delivery_days || 0,
-    doc.warranty_months || 0,
+    doc.delivery_days ?? 0,
+    doc.warranty_months ?? 0,
     doc.notes || null,
     doc.document_date || null,
   ])
@@ -318,6 +393,7 @@ export async function getFreeDocuments() {
   return results.map((row) => ({
     ...row,
     items: typeof row.items === "string" ? JSON.parse(row.items) : row.items,
+    status: row.status || "pending",
   })) as FreeDocument[]
 }
 
@@ -333,11 +409,12 @@ export async function getFreeDocumentById(id: string) {
   return {
     ...row,
     items: typeof row.items === "string" ? JSON.parse(row.items) : row.items,
+    status: row.status || "pending",
   } as FreeDocument
 }
 
 export async function updateFreeDocument(id: string, doc: Partial<FreeDocument>) {
-  const itemsJson = JSON.stringify(doc.items || [])
+  const itemsJson = JSON.stringify(doc.items ?? [])
 
   const sql = `
     UPDATE free_documents SET
@@ -351,25 +428,25 @@ export async function updateFreeDocument(id: string, doc: Partial<FreeDocument>)
   `
 
   await query(sql, [
-    doc.document_title || "DOCUMENTO",
-    doc.document_number || null,
-    doc.company_name || "",
-    doc.company_nit || null,
-    doc.company_address || null,
-    doc.company_phone || null,
-    doc.company_email || null,
-    doc.client_name || "",
-    doc.client_nit || null,
-    doc.client_address || null,
-    doc.client_phone || null,
-    doc.client_email || null,
-    doc.general_description || null,
+    doc.document_title ?? "DOCUMENTO",
+    doc.document_number ?? null,
+    doc.company_name ?? "",
+    doc.company_nit ?? null,
+    doc.company_address ?? null,
+    doc.company_phone ?? null,
+    doc.company_email ?? null,
+    doc.client_name ?? "",
+    doc.client_nit ?? null,
+    doc.client_address ?? null,
+    doc.client_phone ?? null,
+    doc.client_email ?? null,
+    doc.general_description ?? null,
     itemsJson,
-    doc.total || 0,
-    doc.delivery_days || 0,
-    doc.warranty_months || 0,
-    doc.notes || null,
-    doc.document_date || null,
+    doc.total ?? 0,
+    doc.delivery_days ?? 0,
+    doc.warranty_months ?? 0,
+    doc.notes ?? null,
+    doc.document_date ?? null,
     id,
   ])
 

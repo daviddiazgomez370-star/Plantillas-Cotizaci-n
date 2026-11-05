@@ -49,6 +49,33 @@ CREATE TABLE IF NOT EXISTS quotations (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Tabla de documentos libres
+CREATE TABLE IF NOT EXISTS free_documents (
+  id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  document_title VARCHAR(255) NOT NULL DEFAULT 'COTIZACION',
+  document_number VARCHAR(100),
+  company_name VARCHAR(255) NOT NULL,
+  company_nit VARCHAR(50),
+  company_address TEXT,
+  company_phone VARCHAR(50),
+  company_email VARCHAR(255),
+  client_name VARCHAR(255) NOT NULL,
+  client_nit VARCHAR(50),
+  client_address TEXT,
+  client_phone VARCHAR(50),
+  client_email VARCHAR(255),
+  general_description TEXT,
+  items JSON NOT NULL,
+  total DECIMAL(10, 2) NOT NULL,
+  delivery_days INT DEFAULT 0,
+  warranty_months INT DEFAULT 0,
+  notes TEXT,
+  document_date DATE,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Tabla de cuentas de cobro
 CREATE TABLE IF NOT EXISTS invoices (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -56,6 +83,7 @@ CREATE TABLE IF NOT EXISTS invoices (
   
   -- Vinculación con cotización
   quotation_id VARCHAR(36),
+  free_document_id VARCHAR(36),
   
   -- Información de la empresa
   company_name VARCHAR(255) NOT NULL,
@@ -95,11 +123,14 @@ CREATE TABLE IF NOT EXISTS invoices (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   
   -- Clave foránea
-  FOREIGN KEY (quotation_id) REFERENCES quotations(id) ON DELETE SET NULL
+  FOREIGN KEY (quotation_id) REFERENCES quotations(id) ON DELETE SET NULL,
+  FOREIGN KEY (free_document_id) REFERENCES free_documents(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Índices para mejorar el rendimiento
 CREATE INDEX idx_quotations_created_at ON quotations(created_at DESC);
-CREATE INDEX idx_quotations_status ON quotations(status);a
+CREATE INDEX idx_quotations_status ON quotations(status);
+CREATE INDEX idx_free_documents_created_at ON free_documents(created_at DESC);
 CREATE INDEX idx_invoices_created_at ON invoices(created_at DESC);
 CREATE INDEX idx_invoices_quotation_id ON invoices(quotation_id);
+CREATE INDEX idx_invoices_free_document_id ON invoices(free_document_id);

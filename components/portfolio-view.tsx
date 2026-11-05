@@ -17,10 +17,34 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { FileText, Receipt, ArrowLeft, Trash2, ArrowRight, Calendar, Loader2, AlertCircle, PenLine } from "lucide-react"
 import Link from "next/link"
 import type { Quotation, Invoice, FreeDocument } from "@/lib/database"
 import { generateInvoicePDF } from "@/lib/pdf-generator"
+import { formatDate, getCurrentDateInputValue } from "@/lib/dates"
+import { toast } from "@/hooks/use-toast"
+
+function downloadCsv(filename: string, headers: string[], rows: Array<Array<string | number | null | undefined>>) {
+  const escapeValue = (value: string | number | null | undefined) =>
+    `"${String(value ?? "").replaceAll('"', '""')}"`
+  const csv = [headers, ...rows].map((row) => row.map(escapeValue).join(",")).join("\n")
+  const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" }))
+  const link = document.createElement("a")
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
 
 export function PortfolioView() {
   const [quotations, setQuotations] = useState<Quotation[]>([])
@@ -36,6 +60,11 @@ export function PortfolioView() {
   const [workEndDate, setWorkEndDate] = useState("")
   const [paymentDate, setPaymentDate] = useState("")
   const [paymentMethod, setPaymentMethod] = useState("")
+  const [searchTerm, setSearchTerm] = useState("")
+  const [deleteTarget, setDeleteTarget] = useState<{
+    id: string
+    type: "quotation" | "invoice" | "free-document"
+  } | null>(null)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -63,6 +92,7 @@ export function PortfolioView() {
       setDbError(error.message || "Error al conectar con la base de datos. Verifica que XAMPP este activo.")
       setQuotations([])
       setInvoices([])
+      setFreeDocuments([])
     } finally {
       setLoading(false)
     }
@@ -71,6 +101,21 @@ export function PortfolioView() {
   useEffect(() => {
     fetchData()
   }, [fetchData])
+
+  const matchesSearch = (...values: Array<string | number | null | undefined>) => {
+    const term = searchTerm.trim().toLocaleLowerCase("es-CO")
+    return !term || values.some((value) => String(value ?? "").toLocaleLowerCase("es-CO").includes(term))
+  }
+
+  const filteredQuotations = quotations.filter((quotation) =>
+    matchesSearch(quotation.client_name, quotation.company_name, quotation.status)
+  )
+  const filteredFreeDocuments = freeDocuments.filter((doc) =>
+    matchesSearch(doc.client_name, doc.company_name, doc.document_title, doc.document_number, doc.status)
+  )
+  const filteredInvoices = invoices.filter((invoice) =>
+    matchesSearch(invoice.client_name, invoice.company_name, invoice.payment_method)
+  )
 
   const handleConvertToInvoice = (quotation: Quotation) => {
     setSelectedQuotation(quotation)
@@ -84,6 +129,11 @@ export function PortfolioView() {
   }
 
   const handleConvertFreeDocToInvoice = (doc: FreeDocument) => {
+    if (doc.status === "converted") {
+      toast({ title: "Este documento ya fue convertido en una cuenta de cobro", variant: "destructive" })
+      return
+    }
+
     setSelectedFreeDoc(doc)
     setSelectedQuotation(null)
     setWorkDescription(doc.general_description || "")
@@ -111,7 +161,6 @@ export function PortfolioView() {
           client_phone: selectedQuotation.client_phone,
           client_email: selectedQuotation.client_email,
           products: selectedQuotation.products,
-          items: null as any,
           subtotal: selectedQuotation.subtotal,
           iva: selectedQuotation.iva,
           total: selectedQuotation.total,
@@ -127,8 +176,7 @@ export function PortfolioView() {
           client_address: selectedFreeDoc!.client_address,
           client_phone: selectedFreeDoc!.client_phone,
           client_email: selectedFreeDoc!.client_email,
-          products: null as any,
-          items: selectedFreeDoc!.items,
+          products: selectedFreeDoc!.items,
           subtotal: selectedFreeDoc!.total,
           iva: 0,
           total: selectedFreeDoc!.total,
@@ -137,6 +185,7 @@ export function PortfolioView() {
     try {
       const invoiceData = {
         quotation_id: selectedQuotation?.id || null,
+        free_document_id: selectedFreeDoc?.id || null,
         ...source,
         work_description: workDescription,
         work_start_date: workStartDate,
@@ -152,7 +201,10 @@ export function PortfolioView() {
         body: JSON.stringify(invoiceData),
       })
 
-      if (!response.ok) throw new Error("Error al crear cuenta de cobro")
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || "No se pudo crear la cuenta de cobro")
+      }
 
       // Actualizar estado de la cotizacion si viene de una
       if (selectedQuotation) {
@@ -166,28 +218,24 @@ export function PortfolioView() {
       // Generar PDF
       generateInvoicePDF({
         ...invoiceData,
-        date: new Date().toISOString().split("T")[0],
+        date: getCurrentDateInputValue(),
         invoiceNumber: `INV-${Date.now()}`,
       })
 
       setConvertDialogOpen(false)
+      toast({ title: "Cuenta de cobro creada" })
       fetchData()
     } catch (error) {
       console.error("Error:", error)
-      alert("Error al convertir a cuenta de cobro")
+      toast({
+        title: "No se pudo convertir el documento",
+        description: error instanceof Error ? error.message : undefined,
+        variant: "destructive",
+      })
     }
   }
 
   const handleDelete = async (id: string, type: "quotation" | "invoice" | "free-document") => {
-    const labels = {
-      "quotation": "cotizacion",
-      "invoice": "cuenta de cobro",
-      "free-document": "documento libre",
-    }
-    if (!confirm(`Estas seguro de eliminar esta ${labels[type]}?`)) {
-      return
-    }
-
     try {
       const endpoints = {
         "quotation": `/api/quotations/${id}`,
@@ -198,10 +246,11 @@ export function PortfolioView() {
 
       if (!response.ok) throw new Error("Error al eliminar")
 
+      toast({ title: "Registro eliminado" })
       fetchData()
     } catch (error) {
       console.error("Error:", error)
-      alert("Error al eliminar")
+      toast({ title: "No se pudo eliminar el registro", variant: "destructive" })
     }
   }
 
@@ -228,17 +277,26 @@ export function PortfolioView() {
 
   return (
     <>
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-col justify-between gap-4 mb-8 sm:flex-row sm:items-center">
         <div>
           <h1 className="text-4xl font-bold text-slate-900 mb-2">Portafolio</h1>
           <p className="text-slate-600">Gestiona tus cotizaciones y cuentas de cobro</p>
         </div>
-        <Button variant="outline" asChild>
-          <Link href="/">
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Volver al inicio
-          </Link>
-        </Button>
+        <div className="flex w-full gap-3 sm:w-auto">
+          <Input
+            aria-label="Buscar en el portafolio"
+            className="sm:w-72"
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="Buscar por cliente, empresa o estado..."
+          />
+          <Button variant="outline" asChild>
+            <Link href="/">
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Volver al inicio
+            </Link>
+          </Button>
+        </div>
       </div>
 
       {dbError && (
@@ -278,8 +336,19 @@ export function PortfolioView() {
         <TabsContent value="quotations">
           <Card>
             <CardHeader>
-              <CardTitle>Cotizaciones</CardTitle>
-              <CardDescription>Todas las cotizaciones generadas ordenadas por fecha</CardDescription>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <CardTitle>Cotizaciones</CardTitle>
+                  <CardDescription>Todas las cotizaciones generadas ordenadas por fecha</CardDescription>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => downloadCsv("cotizaciones.csv", ["Fecha de creación", "Cliente", "Empresa", "Total", "Estado"], filteredQuotations.map((quotation) => [formatDate(quotation.created_at), quotation.client_name, quotation.company_name, quotation.total, quotation.status]))}
+                >
+                  Exportar CSV
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {quotations.length === 0 ? (
@@ -301,9 +370,9 @@ export function PortfolioView() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {quotations.map((quotation) => (
+                      {filteredQuotations.map((quotation) => (
                         <TableRow key={quotation.id}>
-                          <TableCell>{new Date(quotation.created_at).toLocaleDateString("es-CO")}</TableCell>
+                          <TableCell>{formatDate(quotation.created_at)}</TableCell>
                           <TableCell className="font-medium">{quotation.client_name}</TableCell>
                           <TableCell>${quotation.total.toLocaleString("es-CO")}</TableCell>
                           <TableCell>{getStatusBadge(quotation.status)}</TableCell>
@@ -311,8 +380,7 @@ export function PortfolioView() {
                             {quotation.work_start_date && quotation.work_end_date ? (
                               <div className="flex items-center gap-1 text-sm text-slate-600">
                                 <Calendar className="h-3 w-3" />
-                                {new Date(quotation.work_start_date).toLocaleDateString("es-CO")} -{" "}
-                                {new Date(quotation.work_end_date).toLocaleDateString("es-CO")}
+                                {formatDate(quotation.work_start_date)} - {formatDate(quotation.work_end_date)}
                               </div>
                             ) : (
                               <span className="text-slate-400 text-sm">No especificado</span>
@@ -328,7 +396,7 @@ export function PortfolioView() {
                               <Button
                                 size="sm"
                                 variant="destructive"
-                                onClick={() => handleDelete(quotation.id, "quotation")}
+                                onClick={() => setDeleteTarget({ id: quotation.id, type: "quotation" })}
                               >
                                 <Trash2 className="h-3 w-3" />
                               </Button>
@@ -347,8 +415,19 @@ export function PortfolioView() {
         <TabsContent value="free-documents">
           <Card>
             <CardHeader>
-              <CardTitle>Documentos Libres</CardTitle>
-              <CardDescription>Todos los documentos libres guardados ordenados por fecha</CardDescription>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <CardTitle>Documentos Libres</CardTitle>
+                  <CardDescription>Todos los documentos libres guardados ordenados por fecha</CardDescription>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => downloadCsv("documentos-libres.csv", ["Fecha de creación", "Título", "Cliente", "Empresa", "Total", "Estado"], filteredFreeDocuments.map((doc) => [formatDate(doc.created_at), doc.document_title, doc.client_name, doc.company_name, doc.total, doc.status]))}
+                >
+                  Exportar CSV
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {freeDocuments.length === 0 ? (
@@ -361,7 +440,7 @@ export function PortfolioView() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Fecha</TableHead>
+                        <TableHead>Fecha de creación</TableHead>
                         <TableHead>Titulo</TableHead>
                         <TableHead>Cliente</TableHead>
                         <TableHead>Total</TableHead>
@@ -370,13 +449,9 @@ export function PortfolioView() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {freeDocuments.map((doc) => (
+                      {filteredFreeDocuments.map((doc) => (
                         <TableRow key={doc.id}>
-                          <TableCell>
-                            {doc.document_date
-                              ? new Date(doc.document_date + "T12:00:00").toLocaleDateString("es-CO")
-                              : new Date(doc.created_at).toLocaleDateString("es-CO")}
-                          </TableCell>
+                          <TableCell>{formatDate(doc.created_at)}</TableCell>
                           <TableCell>
                             <Badge variant="secondary">{doc.document_title}</Badge>
                           </TableCell>
@@ -391,13 +466,17 @@ export function PortfolioView() {
                                   Editar
                                 </Link>
                               </Button>
-                              <Button size="sm" onClick={() => handleConvertFreeDocToInvoice(doc)}>
-                                <ArrowRight className="mr-1 h-3 w-3" />A Cuenta de Cobro
-                              </Button>
+                              {doc.status === "converted" ? (
+                                <Badge className="bg-blue-100 text-blue-800">Convertido</Badge>
+                              ) : (
+                                <Button size="sm" onClick={() => handleConvertFreeDocToInvoice(doc)}>
+                                  <ArrowRight className="mr-1 h-3 w-3" />A Cuenta de Cobro
+                                </Button>
+                              )}
                               <Button
                                 size="sm"
                                 variant="destructive"
-                                onClick={() => handleDelete(doc.id, "free-document")}
+                                onClick={() => setDeleteTarget({ id: doc.id, type: "free-document" })}
                               >
                                 <Trash2 className="h-3 w-3" />
                               </Button>
@@ -416,8 +495,19 @@ export function PortfolioView() {
         <TabsContent value="invoices">
           <Card>
             <CardHeader>
-              <CardTitle>Cuentas de Cobro</CardTitle>
-              <CardDescription>Todas las cuentas de cobro generadas ordenadas por fecha</CardDescription>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <CardTitle>Cuentas de Cobro</CardTitle>
+                  <CardDescription>Todas las cuentas de cobro generadas ordenadas por fecha</CardDescription>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => downloadCsv("cuentas-de-cobro.csv", ["Fecha de creación", "Cliente", "Empresa", "Total", "Método de pago"], filteredInvoices.map((invoice) => [formatDate(invoice.created_at), invoice.client_name, invoice.company_name, invoice.total, invoice.payment_method]))}
+                >
+                  Exportar CSV
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {invoices.length === 0 ? (
@@ -439,17 +529,16 @@ export function PortfolioView() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {invoices.map((invoice) => (
+                      {filteredInvoices.map((invoice) => (
                         <TableRow key={invoice.id}>
-                          <TableCell>{new Date(invoice.created_at).toLocaleDateString("es-CO")}</TableCell>
+                          <TableCell>{formatDate(invoice.created_at)}</TableCell>
                           <TableCell className="font-medium">{invoice.client_name}</TableCell>
                           <TableCell>${invoice.total.toLocaleString("es-CO")}</TableCell>
                           <TableCell>
                             {invoice.work_start_date && invoice.work_end_date ? (
                               <div className="flex items-center gap-1 text-sm text-slate-600">
                                 <Calendar className="h-3 w-3" />
-                                {new Date(invoice.work_start_date).toLocaleDateString("es-CO")} -{" "}
-                                {new Date(invoice.work_end_date).toLocaleDateString("es-CO")}
+                                {formatDate(invoice.work_start_date)} - {formatDate(invoice.work_end_date)}
                               </div>
                             ) : (
                               <span className="text-slate-400 text-sm">No especificado</span>
@@ -457,7 +546,7 @@ export function PortfolioView() {
                           </TableCell>
                           <TableCell>
                             {invoice.payment_date ? (
-                              new Date(invoice.payment_date).toLocaleDateString("es-CO")
+                              formatDate(invoice.payment_date)
                             ) : (
                               <span className="text-slate-400">Pendiente</span>
                             )}
@@ -470,7 +559,7 @@ export function PortfolioView() {
                                   Editar
                                 </Link>
                               </Button>
-                              <Button size="sm" variant="destructive" onClick={() => handleDelete(invoice.id, "invoice")}>
+                              <Button size="sm" variant="destructive" onClick={() => setDeleteTarget({ id: invoice.id, type: "invoice" })}>
                                 <Trash2 className="h-3 w-3" />
                               </Button>
                             </div>
@@ -554,6 +643,31 @@ export function PortfolioView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar registro?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta acción no se puede deshacer. El registro se eliminará permanentemente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (deleteTarget) {
+                  handleDelete(deleteTarget.id, deleteTarget.type)
+                }
+                setDeleteTarget(null)
+              }}
+            >
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }

@@ -8,7 +8,9 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { generateFreeDocumentPDF } from "@/lib/pdf-generator"
+import { formatDate, getCurrentDateInputValue, toDateInputValue } from "@/lib/dates"
 import { ClientSelector } from "@/components/client-selector"
+import { toast } from "@/hooks/use-toast"
 import { Download, Plus, Trash2, ArrowLeft, Save } from "lucide-react"
 
 interface DocumentItem {
@@ -36,8 +38,9 @@ export function FreeDocumentForm() {
   const [warrantyMonths, setWarrantyMonths] = useState("12")
   const [notes, setNotes] = useState("")
   const [documentDate, setDocumentDate] = useState(
-    new Date().toISOString().split("T")[0]
+    getCurrentDateInputValue()
   )
+  const [documentNumber, setDocumentNumber] = useState("")
   const [saving, setSaving] = useState(false)
   const searchParams = useSearchParams()
   const editId = searchParams.get("id")
@@ -66,7 +69,8 @@ export function FreeDocumentForm() {
       .then((doc: any) => {
         setIsEditing(true)
         setDocumentTitle(doc.document_title || "")
-        setDocumentDate(doc.document_date || new Date().toISOString().split("T")[0])
+        setDocumentDate(toDateInputValue(doc.document_date) || getCurrentDateInputValue())
+        setDocumentNumber(doc.document_number || "")
         setGeneralDescription(doc.general_description || "")
         setCompanyName(doc.company_name || "")
         setCompanyNit(doc.company_nit || "")
@@ -94,7 +98,7 @@ export function FreeDocumentForm() {
       })
       .catch((error: any) => {
         console.error("Error al cargar el documento:", error)
-        alert(`Error al cargar el documento: ${error.message}`)
+        toast({ title: "No se pudo cargar el documento", description: error.message, variant: "destructive" })
       })
       .finally(() => setLoadingDoc(false))
   }, [editId])
@@ -120,10 +124,11 @@ export function FreeDocumentForm() {
   }
 
   const handleGeneratePDF = () => {
+    console.log("[PDF] Click en Descargar PDF")
     const filteredItems = items.filter((item) => item.description.trim() !== "")
 
     if (filteredItems.length === 0) {
-      alert("Debes agregar al menos un item con descripcion para generar el PDF.")
+      toast({ title: "Agrega al menos un ítem con descripción", variant: "destructive" })
       return
     }
 
@@ -143,19 +148,18 @@ export function FreeDocumentForm() {
       deliveryDays: Number.parseInt(deliveryDays) || 0,
       warrantyMonths: Number.parseInt(warrantyMonths) || 0,
       notes,
-      date: documentDate
-        ? new Date(documentDate + "T12:00:00").toLocaleDateString("es-CO")
-        : new Date().toLocaleDateString("es-CO"),
-      documentNumber: `DOC-${Date.now()}`,
+      date: formatDate(documentDate),
+      documentNumber: documentNumber || `DOC-${Date.now()}`,
       items: filteredItems,
       total: calculateTotal(),
     }
 
     try {
+      console.log("[PDF] Datos enviados:", documentData)
       generateFreeDocumentPDF(documentData)
     } catch (error) {
-      console.error("Error al generar PDF:", error)
-      alert("Ocurrio un error al generar el PDF. Verifica que todos los campos esten correctos.")
+      console.error("[PDF] Error generando PDF:", error)
+      toast({ title: "No se pudo generar el PDF", description: "Verifica los datos del documento.", variant: "destructive" })
     }
   }
 
@@ -163,12 +167,12 @@ export function FreeDocumentForm() {
     const filteredItems = items.filter((item) => item.description.trim() !== "")
 
     if (filteredItems.length === 0) {
-      alert("Debes agregar al menos un item con descripcion para guardar.")
+      toast({ title: "Agrega al menos un ítem con descripción", variant: "destructive" })
       return
     }
 
     if (!clientName.trim()) {
-      alert("Debes ingresar el nombre del cliente.")
+      toast({ title: "Ingresa el nombre del cliente", variant: "destructive" })
       return
     }
 
@@ -176,7 +180,7 @@ export function FreeDocumentForm() {
     try {
       const payload = {
         document_title: documentTitle || "COTIZACION",
-        document_number: `DOC-${Date.now()}`,
+        document_number: documentNumber || null,
         company_name: companyName,
         company_nit: companyNit || null,
         company_address: companyAddress || null,
@@ -210,15 +214,17 @@ export function FreeDocumentForm() {
         throw new Error(errorData.error || "Error al guardar")
       }
 
-      alert(
-        isEditing
-          ? "Documento actualizado exitosamente."
-          : "Documento guardado en el portafolio exitosamente."
-      )
+      toast({
+        title: isEditing ? "Documento actualizado" : "Documento guardado en el portafolio",
+      })
       router.push("/portafolio")
     } catch (error: any) {
       console.error("Error al guardar:", error)
-      alert(`Error al guardar: ${error.message}. Verifica que XAMPP este encendido.`)
+      toast({
+        title: "No se pudo guardar el documento",
+        description: error.message,
+        variant: "destructive",
+      })
     } finally {
       setSaving(false)
     }
@@ -567,6 +573,7 @@ export function FreeDocumentForm() {
                 {saving ? "Guardando..." : isEditing ? "Guardar Cambios" : "Guardar en Portafolio"}
               </Button>
               <Button
+                type="button"
                 onClick={handleGeneratePDF}
                 size="lg"
                 disabled={!clientName.trim() || items.every((i) => !i.description.trim())}

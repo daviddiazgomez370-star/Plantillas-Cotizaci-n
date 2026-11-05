@@ -1,3 +1,7 @@
+-- SOLO REFERENCIA PARA POSTGRESQL.
+-- La aplicación configurada con XAMPP usa MySQL/MariaDB; ejecuta
+-- scripts/mysql_create_tables.sql en lugar de este archivo.
+
 -- Tabla de cotizaciones
 CREATE TABLE IF NOT EXISTS quotations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
