@@ -186,6 +186,50 @@ Todas las respuestas son JSON. Las solicitudes de creación y actualización val
 | `POST` | `/api/clients` | Crea un cliente. |
 | `GET` / `PUT` / `DELETE` | `/api/clients/:id` | Consulta, actualiza o elimina un cliente. |
 
+## Trabajadores y trabajos (Fase 1)
+
+La migracion `005_workers_jobs.sql` incorpora este modulo sin implementar asistencia, gastos, nomina, pagos ni reparto de utilidades.
+
+| Tabla | Proposito |
+| --- | --- |
+| `workers` | Trabajadores, cargo, telefono opcional, tipo de remuneracion, tarifa diaria opcional y estado activo. |
+| `jobs` | Trabajos con valor acordado `DECIMAL(14,2)`, cliente opcional, referencia opcional a cotizacion, fechas, estado y observaciones. |
+| `job_workers` | Relacion muchos-a-muchos entre trabajos y trabajadores. |
+| `job_status_history` | Registro de cada estado inicial y transicion de un trabajo. |
+
+Los tipos internos de remuneracion son `daily_rate` y `profit_share`. Una tarifa diaria solo se admite para `daily_rate`; por ejemplo, el ayudante puede guardar `100000` como tarifa diaria COP. No hay valores monetarios fijos en los componentes.
+
+Los estados internos son `accepted`, `in_progress` y `completed`, mostrados como **Aceptado**, **En proceso** y **Finalizado**. El flujo permitido es `accepted -> in_progress -> completed`; es un estado operativo, no financiero.
+
+`jobs.client_id` y `jobs.quotation_id` son claves foraneas opcionales con `ON DELETE SET NULL`. Un trabajo puede existir sin cliente registrado y la futura conversion Cotizacion -> Trabajo puede usar `quotation_id` sin cambiar el esquema.
+
+### API del modulo
+
+| Metodo | Ruta | Operacion |
+| --- | --- | --- |
+| `GET` / `POST` | `/api/workers` | Lista o crea trabajadores. |
+| `GET` / `PUT` | `/api/workers/:id` | Consulta o edita un trabajador. |
+| `PATCH` | `/api/workers/:id/active` | Activa o desactiva un trabajador. |
+| `GET` / `POST` | `/api/jobs` | Lista o crea trabajos; la creacion acepta `worker_ids` opcional. |
+| `GET` / `PUT` | `/api/jobs/:id` | Consulta el detalle o edita un trabajo. |
+| `PATCH` | `/api/jobs/:id/status` | Aplica la siguiente transicion valida de estado. |
+| `POST` | `/api/jobs/:id/workers` | Asigna uno o varios trabajadores activos. |
+| `DELETE` | `/api/jobs/:id/workers/:workerId` | Quita un trabajador de un trabajo. |
+
+Los endpoints validan UUIDs, importes, fechas, estados, tipos de remuneracion y asignaciones con Zod. Devuelven `201` al crear, `400` para entrada invalida, `404` para recursos inexistentes y `409` para conflictos como una transicion o asignacion duplicada.
+
+### Pruebas de la Fase 1
+
+Con MariaDB/XAMPP iniciado y `.env.local` configurado:
+
+```bash
+npm run db:migrate
+npm run db:migrate:status
+npm run build
+```
+
+En `/trabajadores-trabajos`, registra un ayudante de tarifa diaria con valor `100000`, editalo, desactivalo y reactivalo. Despues crea un trabajo, asocialo opcionalmente a un cliente, asigna trabajadores, edita sus datos y avanza por Aceptado, En proceso y Finalizado. Recarga el navegador y consulta `workers`, `jobs`, `job_workers` y `job_status_history` en phpMyAdmin para comprobar la persistencia.
+
 ## Estructura del proyecto
 
 ```text

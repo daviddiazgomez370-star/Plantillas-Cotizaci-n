@@ -1,4 +1,6 @@
 import { query, generateUUID, transaction } from "./mysql"
+import { ConflictError, ResourceNotFoundError } from "./errors"
+import type { PoolConnection } from "mysql2/promise"
 
 export type QuotationStatus = "pending" | "approved" | "converted" | "cancelled"
 
@@ -533,4 +535,354 @@ export async function updateClient(id: string, client: Partial<Client>) {
 export async function deleteClient(id: string) {
   const sql = "DELETE FROM clients WHERE id = ?"
   await query(sql, [id])
+}
+
+// ---- Trabajadores y trabajos (Fase 1) ----
+
+export type WorkerCompensationType = "daily_rate" | "profit_share"
+export type JobStatus = "accepted" | "in_progress" | "completed"
+
+export interface Worker {
+  id: string
+  name: string
+  job_title: string
+  phone?: string
+  compensation_type: WorkerCompensationType
+  daily_rate?: number
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface JobWorker {
+  id: string
+  name: string
+  job_title: string
+  compensation_type: WorkerCompensationType
+  daily_rate?: number
+  is_active: boolean
+  assigned_at: string
+}
+
+export interface JobStatusHistory {
+  id: number
+  previous_status?: JobStatus
+  new_status: JobStatus
+  changed_at: string
+}
+
+export interface Job {
+  id: string
+  name: string
+  description?: string
+  client_id?: string
+  client_name?: string
+  quotation_id?: string
+  agreed_value: number
+  start_date?: string
+  end_date?: string
+  status: JobStatus
+  notes?: string
+  worker_count?: number
+  created_at: string
+  updated_at: string
+  workers?: JobWorker[]
+  status_history?: JobStatusHistory[]
+}
+
+export interface WorkerInput {
+  name: string
+  job_title: string
+  phone?: string
+  compensation_type: WorkerCompensationType
+  daily_rate?: number
+}
+
+export interface JobInput {
+  name: string
+  description?: string
+  client_id?: string
+  quotation_id?: string
+  agreed_value: number
+  start_date?: string
+  end_date?: string
+  notes?: string
+}
+
+function toDateInputValue(value: unknown) {
+  if (value instanceof Date) return value.toISOString().slice(0, 10)
+  return typeof value === "string" ? value.slice(0, 10) : value
+}
+
+function normalizeWorker(row: any): Worker {
+  return {
+    ...row,
+    daily_rate: row.daily_rate === null || row.daily_rate === undefined ? undefined : Number(row.daily_rate),
+    is_active: Boolean(row.is_active),
+  }
+}
+
+function normalizeJob(row: any): Job {
+  return {
+    ...row,
+    agreed_value: Number(row.agreed_value),
+    worker_count: row.worker_count === undefined ? undefined : Number(row.worker_count),
+    start_date: toDateInputValue(row.start_date) as string | undefined,
+    end_date: toDateInputValue(row.end_date) as string | undefined,
+  }
+}
+
+async function assertOptionalReference(
+  connection: PoolConnection,
+  table: "clients" | "quotations",
+  id: string | undefined,
+  label: string
+) {
+  if (!id) return
+  const [rows] = await connection.execute<any[]>(`SELECT id FROM ${table} WHERE id = ?`, [id])
+  if (rows.length === 0) throw new ResourceNotFoundError(`${label} no encontrado`)
+}
+
+async function getWorkersForAssignment(connection: PoolConnection, workerIds: string[]) {
+  if (workerIds.length === 0) return
+
+  const placeholders = workerIds.map(() => "?").join(", ")
+  const [workers] = await connection.execute<any[]>(
+    `SELECT id, is_active FROM workers WHERE id IN (${placeholders}) FOR UPDATE`,
+    workerIds
+  )
+  const foundIds = new Set(workers.map((worker: { id: string }) => worker.id))
+  const missingId = workerIds.find((workerId) => !foundIds.has(workerId))
+  if (missingId) throw new ResourceNotFoundError("Uno de los trabajadores seleccionados no existe")
+
+  if (workers.some((worker: { is_active: number }) => !worker.is_active)) {
+    throw new ConflictError("No puedes asignar trabajadores inactivos a un trabajo")
+  }
+}
+
+async function assertJobExists(connection: PoolConnection, jobId: string, lock = false) {
+  const [jobs] = await connection.execute<any[]>(
+    `SELECT id, status FROM jobs WHERE id = ?${lock ? " FOR UPDATE" : ""}`,
+    [jobId]
+  )
+  if (jobs.length === 0) throw new ResourceNotFoundError("Trabajo no encontrado")
+  return jobs[0] as { id: string; status: JobStatus }
+}
+
+export async function saveWorker(worker: WorkerInput) {
+  const id = generateUUID()
+  await query(
+    `INSERT INTO workers (id, name, job_title, phone, compensation_type, daily_rate)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      worker.name,
+      worker.job_title,
+      worker.phone || null,
+      worker.compensation_type,
+      worker.daily_rate ?? null,
+    ]
+  )
+  return getWorkerById(id)
+}
+
+export async function getWorkers() {
+  const workers = await query<any[]>("SELECT * FROM workers ORDER BY is_active DESC, name ASC")
+  return workers.map(normalizeWorker)
+}
+
+export async function getWorkerById(id: string) {
+  const workers = await query<any[]>("SELECT * FROM workers WHERE id = ?", [id])
+  if (workers.length === 0) throw new ResourceNotFoundError("Trabajador no encontrado")
+  return normalizeWorker(workers[0])
+}
+
+export async function updateWorker(id: string, worker: WorkerInput) {
+  const result = await query<any>(
+    `UPDATE workers SET
+       name = ?, job_title = ?, phone = ?, compensation_type = ?, daily_rate = ?, updated_at = NOW()
+     WHERE id = ?`,
+    [
+      worker.name,
+      worker.job_title,
+      worker.phone || null,
+      worker.compensation_type,
+      worker.daily_rate ?? null,
+      id,
+    ]
+  )
+  if (result.affectedRows === 0) throw new ResourceNotFoundError("Trabajador no encontrado")
+  return getWorkerById(id)
+}
+
+export async function setWorkerActive(id: string, isActive: boolean) {
+  const result = await query<any>(
+    "UPDATE workers SET is_active = ?, updated_at = NOW() WHERE id = ?",
+    [isActive, id]
+  )
+  if (result.affectedRows === 0) throw new ResourceNotFoundError("Trabajador no encontrado")
+  return getWorkerById(id)
+}
+
+export async function saveJob(job: JobInput, workerIds: string[] = []) {
+  const id = generateUUID()
+
+  await transaction(async (connection) => {
+    await assertOptionalReference(connection, "clients", job.client_id, "Cliente")
+    await assertOptionalReference(connection, "quotations", job.quotation_id, "Cotizacion")
+    await getWorkersForAssignment(connection, workerIds)
+
+    await connection.execute(
+      `INSERT INTO jobs (
+        id, name, description, client_id, quotation_id, agreed_value, start_date, end_date, status, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?)`,
+      [
+        id,
+        job.name,
+        job.description || null,
+        job.client_id || null,
+        job.quotation_id || null,
+        job.agreed_value,
+        job.start_date || null,
+        job.end_date || null,
+        job.notes || null,
+      ]
+    )
+    await connection.execute(
+      "INSERT INTO job_status_history (job_id, previous_status, new_status) VALUES (?, NULL, 'accepted')",
+      [id]
+    )
+
+    for (const workerId of workerIds) {
+      await connection.execute("INSERT INTO job_workers (job_id, worker_id) VALUES (?, ?)", [id, workerId])
+    }
+  })
+
+  return getJobById(id)
+}
+
+export async function getJobs() {
+  const jobs = await query<any[]>(`
+    SELECT j.*, c.name AS client_name,
+      (SELECT COUNT(*) FROM job_workers jw WHERE jw.job_id = j.id) AS worker_count
+    FROM jobs j
+    LEFT JOIN clients c ON c.id = j.client_id
+    ORDER BY j.created_at DESC
+  `)
+  return jobs.map(normalizeJob)
+}
+
+export async function getJobById(id: string) {
+  const jobs = await query<any[]>(`
+    SELECT j.*, c.name AS client_name
+    FROM jobs j
+    LEFT JOIN clients c ON c.id = j.client_id
+    WHERE j.id = ?
+  `, [id])
+  if (jobs.length === 0) throw new ResourceNotFoundError("Trabajo no encontrado")
+
+  const [workers, statusHistory] = await Promise.all([
+    query<any[]>(`
+      SELECT w.id, w.name, w.job_title, w.compensation_type, w.daily_rate, w.is_active, jw.assigned_at
+      FROM job_workers jw
+      INNER JOIN workers w ON w.id = jw.worker_id
+      WHERE jw.job_id = ?
+      ORDER BY w.name ASC
+    `, [id]),
+    query<any[]>(`
+      SELECT id, previous_status, new_status, changed_at
+      FROM job_status_history
+      WHERE job_id = ?
+      ORDER BY changed_at DESC, id DESC
+    `, [id]),
+  ])
+
+  return {
+    ...normalizeJob(jobs[0]),
+    workers: workers.map((worker) => normalizeWorker(worker)),
+    status_history: statusHistory,
+  }
+}
+
+export async function updateJob(id: string, job: JobInput) {
+  await transaction(async (connection) => {
+    await assertJobExists(connection, id, true)
+    await assertOptionalReference(connection, "clients", job.client_id, "Cliente")
+    await assertOptionalReference(connection, "quotations", job.quotation_id, "Cotizacion")
+
+    await connection.execute(
+      `UPDATE jobs SET
+        name = ?, description = ?, client_id = ?, quotation_id = ?, agreed_value = ?,
+        start_date = ?, end_date = ?, notes = ?, updated_at = NOW()
+      WHERE id = ?`,
+      [
+        job.name,
+        job.description || null,
+        job.client_id || null,
+        job.quotation_id || null,
+        job.agreed_value,
+        job.start_date || null,
+        job.end_date || null,
+        job.notes || null,
+        id,
+      ]
+    )
+  })
+  return getJobById(id)
+}
+
+const allowedJobTransitions: Record<JobStatus, JobStatus[]> = {
+  accepted: ["in_progress"],
+  in_progress: ["completed"],
+  completed: [],
+}
+
+export async function updateJobStatus(id: string, nextStatus: JobStatus) {
+  await transaction(async (connection) => {
+    const job = await assertJobExists(connection, id, true)
+    if (job.status === nextStatus || !allowedJobTransitions[job.status].includes(nextStatus)) {
+      throw new ConflictError("La transicion de estado solicitada no es valida")
+    }
+
+    await connection.execute("UPDATE jobs SET status = ?, updated_at = NOW() WHERE id = ?", [nextStatus, id])
+    await connection.execute(
+      "INSERT INTO job_status_history (job_id, previous_status, new_status) VALUES (?, ?, ?)",
+      [id, job.status, nextStatus]
+    )
+  })
+  return getJobById(id)
+}
+
+export async function assignWorkersToJob(jobId: string, workerIds: string[]) {
+  await transaction(async (connection) => {
+    await assertJobExists(connection, jobId, true)
+    await getWorkersForAssignment(connection, workerIds)
+    const placeholders = workerIds.map(() => "?").join(", ")
+    const [existing] = await connection.execute<any[]>(
+      `SELECT worker_id FROM job_workers WHERE job_id = ? AND worker_id IN (${placeholders}) FOR UPDATE`,
+      [jobId, ...workerIds]
+    )
+    if (existing.length > 0) {
+      throw new ConflictError("Uno de los trabajadores ya esta asignado a este trabajo")
+    }
+
+    for (const workerId of workerIds) {
+      await connection.execute("INSERT INTO job_workers (job_id, worker_id) VALUES (?, ?)", [jobId, workerId])
+    }
+  })
+  return getJobById(jobId)
+}
+
+export async function removeWorkerFromJob(jobId: string, workerId: string) {
+  await transaction(async (connection) => {
+    await assertJobExists(connection, jobId, true)
+    const [result] = await connection.execute<any>(
+      "DELETE FROM job_workers WHERE job_id = ? AND worker_id = ?",
+      [jobId, workerId]
+    )
+    if (result.affectedRows === 0) {
+      throw new ResourceNotFoundError("El trabajador no esta asignado a este trabajo")
+    }
+  })
+  return getJobById(jobId)
 }

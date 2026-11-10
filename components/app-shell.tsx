@@ -3,7 +3,7 @@
 import type { ReactNode } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Calculator, FileText, FolderOpen, LayoutDashboard, LayoutTemplate, ReceiptText, Settings, Users } from "lucide-react"
+import { BriefcaseBusiness, Calculator, FileText, FolderOpen, LayoutDashboard, LayoutTemplate, ReceiptText, Settings, Users } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 const navigation = [
@@ -14,6 +14,7 @@ const navigation = [
   { href: "/cuenta-cobro", label: "Cuentas de cobro", icon: ReceiptText },
   { href: "/portafolio", label: "Portafolio", icon: FolderOpen },
   { href: "/clientes", label: "Clientes", icon: Users },
+  { href: "/trabajadores-trabajos", label: "Trabajadores y trabajos", icon: BriefcaseBusiness },
   { href: "/configuracion", label: "Configuración", icon: Settings },
 ]
 

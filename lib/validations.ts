@@ -1,5 +1,6 @@
 import { z, type ZodError } from "zod"
 import { NextResponse } from "next/server"
+import { ConflictError, ResourceNotFoundError } from "@/lib/errors"
 
 const optionalText = (maxLength = 1_000) =>
   z
@@ -22,6 +23,13 @@ const requiredText = (label: string, maxLength = 255) =>
 
 const money = z.coerce.number().finite().min(0, "El valor no puede ser negativo")
 const uuid = z.string().uuid("El identificador no es válido")
+
+export const idSchema = z.string().uuid("El identificador no es valido")
+
+const optionalMoney = z.preprocess(
+  (value) => (value === "" || value === null ? undefined : value),
+  z.coerce.number().finite().min(0, "El valor no puede ser negativo").optional()
+)
 
 const itemSchema = z.object({
   id: optionalText(100),
@@ -137,6 +145,84 @@ export const quotationStatusSchema = z.object({
   status: z.enum(["pending", "approved", "converted", "cancelled"]),
 })
 
+export const workerCompensationTypes = ["daily_rate", "profit_share"] as const
+export const jobStatuses = ["accepted", "in_progress", "completed"] as const
+
+export const workerSchema = z
+  .object({
+    name: requiredText("El nombre del trabajador"),
+    job_title: requiredText("El cargo", 100),
+    phone: optionalText(50),
+    compensation_type: z.enum(workerCompensationTypes),
+    daily_rate: optionalMoney,
+  })
+  .superRefine((worker, context) => {
+    if (worker.compensation_type === "daily_rate" && worker.daily_rate === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["daily_rate"],
+        message: "La tarifa diaria es obligatoria para este tipo de remuneracion",
+      })
+    }
+
+    if (worker.compensation_type !== "daily_rate" && worker.daily_rate !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["daily_rate"],
+        message: "La tarifa diaria solo aplica a trabajadores con tarifa diaria",
+      })
+    }
+  })
+
+export const workerActivationSchema = z.object({
+  is_active: z.boolean(),
+})
+
+export const jobSchema = z
+  .object({
+    name: requiredText("El nombre del trabajo"),
+    description: optionalText(5_000),
+    client_id: idSchema.nullable().optional().transform((value) => value || undefined),
+    quotation_id: idSchema.nullable().optional().transform((value) => value || undefined),
+    agreed_value: money,
+    start_date: optionalDate,
+    end_date: optionalDate,
+    notes: optionalText(5_000),
+  })
+  .superRefine((job, context) => {
+    if (job.start_date && job.end_date && job.end_date < job.start_date) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["end_date"],
+        message: "La fecha de finalizacion no puede ser anterior a la fecha inicial",
+      })
+    }
+  })
+
+export const workerIdsSchema = z
+  .array(idSchema)
+  .min(1, "Selecciona al menos un trabajador")
+  .superRefine((workerIds, context) => {
+    if (new Set(workerIds).size !== workerIds.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "No repitas trabajadores en la asignacion",
+      })
+    }
+  })
+
+export const jobCreateSchema = jobSchema.and(z.object({
+  worker_ids: workerIdsSchema.optional(),
+}))
+
+export const jobStatusSchema = z.object({
+  status: z.enum(jobStatuses),
+})
+
+export const workerAssignmentSchema = z.object({
+  worker_ids: workerIdsSchema,
+})
+
 export function invalidRequest(error: ZodError) {
   const firstMessage = error.issues[0]?.message
 
@@ -147,6 +233,22 @@ export function invalidRequest(error: ZodError) {
     },
     { status: 400 }
   )
+}
+
+export function badRequest(message: string) {
+  return NextResponse.json({ error: message }, { status: 400 })
+}
+
+export function knownRequestError(error: unknown) {
+  if (error instanceof ResourceNotFoundError) {
+    return NextResponse.json({ error: error.message }, { status: 404 })
+  }
+
+  if (error instanceof ConflictError) {
+    return NextResponse.json({ error: error.message }, { status: 409 })
+  }
+
+  return null
 }
 
 export function serverError(message: string) {
