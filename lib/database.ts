@@ -579,6 +579,7 @@ export interface Job {
   client_name?: string
   quotation_id?: string
   agreed_value: number
+  advance_percentage?: number
   start_date?: string
   end_date?: string
   status: JobStatus
@@ -626,6 +627,7 @@ function normalizeJob(row: any): Job {
   return {
     ...row,
     agreed_value: Number(row.agreed_value),
+    advance_percentage: row.advance_percentage === undefined ? undefined : Number(row.advance_percentage),
     worker_count: row.worker_count === undefined ? undefined : Number(row.worker_count),
     start_date: toDateInputValue(row.start_date) as string | undefined,
     end_date: toDateInputValue(row.end_date) as string | undefined,
@@ -1267,3 +1269,41 @@ export async function deleteJobExpense(jobId: string, expenseId: string) {
     await connection.execute("DELETE FROM job_expenses WHERE id = ?", [expenseId])
   })
 }
+
+// ---- Cobros del cliente (Fase 4) ----
+export type PaymentType = "advance" | "installment" | "final" | "other"
+export interface JobClientPayment { id: string; job_id: string; payment_date: string; payment_type: PaymentType; amount: number; note?: string; created_at: string; updated_at: string }
+export interface JobClientPaymentInput { payment_date: string; payment_type: PaymentType; amount: number; note?: string }
+type PaymentRow = Omit<JobClientPayment, "amount" | "note"> & { amount: number | string; note: string | null }
+const normalizePayment = (row: PaymentRow): JobClientPayment => ({ ...row, amount: Number(row.amount), note: row.note || undefined })
+const toMinorUnits = (amount: number) => Math.round(amount * 100)
+const fromMinorUnits = (amount: number) => amount / 100
+
+async function paymentSummary(connection: PoolConnection, jobId: string, excludeId?: string) {
+  const [rows] = await connection.execute<RowDataPacket[]>(`SELECT COALESCE(SUM(amount), 0) AS total FROM job_client_payments WHERE job_id = ?${excludeId ? " AND id <> ?" : ""}`, excludeId ? [jobId, excludeId] : [jobId])
+  return toMinorUnits(Number(rows[0]?.total || 0))
+}
+
+async function lockJobForPayment(connection: PoolConnection, jobId: string) {
+  const [jobs] = await connection.execute<RowDataPacket[]>("SELECT agreed_value FROM jobs WHERE id = ? FOR UPDATE", [jobId])
+  if (!jobs.length) throw new ResourceNotFoundError("Trabajo no encontrado")
+  return toMinorUnits(Number(jobs[0].agreed_value))
+}
+
+async function ensurePaymentFits(connection: PoolConnection, jobId: string, amount: number, excludeId?: string, agreedValue?: number) {
+  const agreed = agreedValue ?? await lockJobForPayment(connection, jobId)
+  const received = await paymentSummary(connection, jobId, excludeId)
+  if (received + toMinorUnits(amount) > agreed) {
+    throw new ConflictError(`El cobro supera el valor acordado. Saldo pendiente: ${fromMinorUnits(Math.max(0, agreed - received))}`)
+  }
+}
+export async function getJobPayments(jobId: string) {
+  const job = await getJobById(jobId)
+  const rows = await query<PaymentRow[]>("SELECT id, job_id, DATE_FORMAT(payment_date, '%Y-%m-%d') AS payment_date, payment_type, amount, note, created_at, updated_at FROM job_client_payments WHERE job_id = ? ORDER BY payment_date DESC, created_at DESC", [jobId])
+  const payments = rows.map(normalizePayment); const received = payments.reduce((sum, p) => sum + toMinorUnits(p.amount), 0); const agreed = toMinorUnits(job.agreed_value); const advance = job.advance_percentage ?? 50
+  return { job, payments, summary: { advance_percentage: advance, advance_expected: job.agreed_value * advance / 100, total_received: fromMinorUnits(received), balance_due: fromMinorUnits(agreed - received), financial_status: received === 0 ? "no_payments" : received === agreed ? "paid" : "partial" } }
+}
+export async function saveJobPayment(jobId: string, payment: JobClientPaymentInput) { const id = generateUUID(); await transaction(async c => { await ensurePaymentFits(c, jobId, payment.amount); await c.execute("INSERT INTO job_client_payments (id,job_id,payment_date,payment_type,amount,note) VALUES (?,?,?,?,?,?)", [id,jobId,payment.payment_date,payment.payment_type,payment.amount,payment.note||null]) }); return id }
+export async function updateJobPayment(jobId: string, id: string, payment: JobClientPaymentInput) { await transaction(async c => { const agreedValue=await lockJobForPayment(c,jobId); const [found]=await c.execute<RowDataPacket[]>("SELECT id FROM job_client_payments WHERE id=? AND job_id=? FOR UPDATE",[id,jobId]); if(!found.length) throw new ResourceNotFoundError("Cobro no encontrado para este trabajo"); await ensurePaymentFits(c,jobId,payment.amount,id,agreedValue); await c.execute("UPDATE job_client_payments SET payment_date=?,payment_type=?,amount=?,note=?,updated_at=NOW() WHERE id=?",[payment.payment_date,payment.payment_type,payment.amount,payment.note||null,id]) }) }
+export async function deleteJobPayment(jobId: string, id: string) { await transaction(async c => { await assertJobExists(c,jobId,true); const [found]=await c.execute<RowDataPacket[]>("SELECT id FROM job_client_payments WHERE id=? AND job_id=? FOR UPDATE",[id,jobId]); if(!found.length) throw new ResourceNotFoundError("Cobro no encontrado para este trabajo"); await c.execute("DELETE FROM job_client_payments WHERE id=?",[id]) }) }
+export async function updateJobAdvancePercentage(jobId: string, percentage: number) { await transaction(async c => { const job=await assertJobExists(c,jobId,true); await c.execute("UPDATE jobs SET advance_percentage=?, updated_at=NOW() WHERE id=?",[percentage,job.id]) }); return getJobPayments(jobId) }

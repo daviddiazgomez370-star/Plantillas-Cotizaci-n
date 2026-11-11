@@ -186,7 +186,7 @@ Todas las respuestas son JSON. Las solicitudes de creación y actualización val
 | `POST` | `/api/clients` | Crea un cliente. |
 | `GET` / `PUT` / `DELETE` | `/api/clients/:id` | Consulta, actualiza o elimina un cliente. |
 
-## Trabajadores y trabajos (Fases 1, 2 y 3)
+## Trabajadores y trabajos (Fases 1, 2, 3 y 4)
 
 La migracion `005_workers_jobs.sql` incorpora este modulo sin implementar asistencia, gastos, nomina, pagos ni reparto de utilidades.
 
@@ -198,6 +198,7 @@ La migracion `005_workers_jobs.sql` incorpora este modulo sin implementar asiste
 | `job_status_history` | Registro de cada estado inicial y transicion de un trabajo. |
 | `work_attendance` | Asistencia por trabajo, trabajador y dia de calendario. |
 | `job_expenses` | Gastos reales asociados a un trabajo. |
+| `job_client_payments` | Cobros recibidos del cliente por trabajo. |
 
 Los tipos internos de remuneracion son `daily_rate` y `profit_share`. Una tarifa diaria solo se admite para `daily_rate`; por ejemplo, el ayudante puede guardar `100000` como tarifa diaria COP. No hay valores monetarios fijos en los componentes.
 
@@ -210,6 +211,12 @@ La migracion `006_work_attendance.sql` agrega asistencia sin incluir nomina, pag
 Solo se puede registrar o corregir asistencia mientras el trabajo esta **En proceso**. El servidor comprueba dentro de una transaccion que cada trabajador siga asignado en `job_workers` y activo. Los trabajos **Aceptados** y **Finalizados** solo permiten consulta; los registros previos de trabajadores inactivos o trabajos finalizados permanecen visibles. Las fechas se envian y almacenan como `AAAA-MM-DD`, sin convertirlas a instantes UTC.
 
 La migracion `007_job_expenses.sql` agrega gastos por trabajo: fecha `DATE`, categoria estable (`materials`, `transport`, `tools`, `food`, `services` u `other`), descripcion, monto `DECIMAL(14,2)` y nota opcional. Cada gasto referencia al trabajo con `ON DELETE RESTRICT` y tiene indices por trabajo/fecha y trabajo/categoria/fecha. Los trabajos **Aceptados** y **En proceso** permiten registrar gastos; un trabajo **Finalizado** conserva su historial, pero bloquea crear, editar y eliminar gastos en el servidor.
+
+La migracion `008_job_client_payments.sql` agrega `jobs.advance_percentage` como `DECIMAL(5,2)` con valor predeterminado `50.00`, y la tabla `job_client_payments`. El porcentaje expresa el **adelanto esperado**, no dinero recibido: se puede ajustar entre 0 y 100 y solo cambia el valor de referencia. Cada cobro usa fecha `DATE`, tipo estable (`advance`, `installment`, `final` u `other`), importe `DECIMAL(14,2)` y nota opcional; su clave foranea hacia `jobs` usa `ON DELETE RESTRICT` y el indice `(job_id, payment_date)` facilita la consulta del historial.
+
+El total recibido se calcula exclusivamente desde los cobros persistidos. Por trabajo, la interfaz muestra valor acordado, adelanto esperado, total recibido, saldo pendiente y estado financiero derivado: **Sin pagos** cuando el total es cero, **Pago parcial** cuando es menor al valor acordado y **Pagado** cuando coincide exactamente. Los trabajos **Finalizados** conservan y permiten crear, editar y eliminar cobros, pues el cliente puede pagar despues del cierre operativo.
+
+El servidor rechaza con `409` cualquier alta o edicion que supere el valor acordado. La verificacion ocurre en una transaccion: bloquea con `SELECT ... FOR UPDATE` la fila estable del trabajo, suma los cobros vigentes, valida el nuevo saldo y solo entonces inserta o actualiza. Asi dos solicitudes concurrentes no pueden registrar un sobrepago.
 
 ### API del modulo
 
@@ -227,6 +234,9 @@ La migracion `007_job_expenses.sql` agrega gastos por trabajo: fecha `DATE`, cat
 | `POST` | `/api/jobs/:id/attendance` | Crea o actualiza en lote la asistencia de una fecha. Recibe `work_date` y `records`; es transaccional. |
 | `GET` / `POST` | `/api/jobs/:id/expenses` | Consulta gastos con filtros opcionales de mes/categoria o registra un gasto. |
 | `PATCH` / `DELETE` | `/api/jobs/:id/expenses/:expenseId` | Edita o elimina un gasto del trabajo; se bloquea si esta Finalizado. |
+| `GET` / `POST` | `/api/jobs/:id/payments` | Consulta cobros o registra un cobro del cliente. |
+| `PATCH` | `/api/jobs/:id/payments` | Actualiza `advance_percentage`; no crea ni altera cobros. |
+| `PATCH` / `DELETE` | `/api/jobs/:id/payments/:paymentId` | Edita o elimina un cobro, verificando que pertenezca al trabajo. |
 
 Los endpoints validan UUIDs, importes, fechas, estados, tipos de remuneracion y asignaciones con Zod. Devuelven `201` al crear, `400` para entrada invalida, `404` para recursos inexistentes y `409` para conflictos como una transicion o asignacion duplicada.
 
@@ -245,6 +255,8 @@ En `/trabajadores-trabajos`, registra un ayudante de tarifa diaria con valor `10
 En la pestaña **Dias trabajados**, selecciona un trabajo y un mes. El calendario muestra un indicador y una leyenda para los dias con registros; al seleccionar una fecha se pueden marcar los trabajadores asignados como **Trabajado** o **No trabajado** y anotar una observacion opcional. Un solo guardado actualiza todos los trabajadores seleccionados de esa fecha. La tabla usa los mismos datos persistidos, con filtros de mes, trabajador y estado, y los contadores muestran solo la cantidad de dias trabajados por trabajador en el mes, sin montos.
 
 En la pestana **Gastos**, selecciona un trabajo para registrar fecha, categoria, descripcion, valor COP y nota opcional. La tabla permite filtrar por mes y categoria, editar, o eliminar tras confirmacion. El resumen muestra valor acordado, total de gastos, cantidad y desglose por categoria; no calcula utilidad ni pagos.
+
+En la pestana **Cobros**, selecciona un trabajo para consultar su valor acordado, porcentaje y valor esperado de adelanto, total recibido, saldo pendiente y estado financiero. Registra adelantos, abonos, pagos finales u otros cobros con fecha y nota opcional; el historial permite editar o eliminar despues de confirmar. Un trabajo Finalizado puede seguir recibiendo cobros mientras tenga saldo pendiente. El sistema no convierte el adelanto esperado en un pago ni calcula utilidad, nomina o reparto.
 
 ## Estructura del proyecto
 

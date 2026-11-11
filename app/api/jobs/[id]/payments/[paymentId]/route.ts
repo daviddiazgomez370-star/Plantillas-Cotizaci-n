@@ -1,0 +1,6 @@
+import { NextResponse } from "next/server"
+import { deleteJobPayment, getJobPayments, updateJobPayment } from "@/lib/database"
+import { badRequest,idSchema,invalidRequest,jobClientPaymentSchema,knownRequestError,serverError } from "@/lib/validations"
+type C={params:Promise<{id:string;paymentId:string}>}
+export async function PATCH(r:Request,{params}:C){const {id,paymentId}=await params;const j=idSchema.safeParse(id),p=idSchema.safeParse(paymentId);if(!j.success)return invalidRequest(j.error);if(!p.success)return invalidRequest(p.error);let b:unknown;try{b=await r.json()}catch{return badRequest("El cuerpo de la solicitud debe ser JSON valido")};const v=jobClientPaymentSchema.safeParse(b);if(!v.success)return invalidRequest(v.error);try{await updateJobPayment(j.data,p.data,v.data);return NextResponse.json(await getJobPayments(j.data))}catch(e){return knownRequestError(e)||serverError("No se pudo actualizar el cobro")}}
+export async function DELETE(_r:Request,{params}:C){const {id,paymentId}=await params;const j=idSchema.safeParse(id),p=idSchema.safeParse(paymentId);if(!j.success)return invalidRequest(j.error);if(!p.success)return invalidRequest(p.error);try{await deleteJobPayment(j.data,p.data);return NextResponse.json(await getJobPayments(j.data))}catch(e){return knownRequestError(e)||serverError("No se pudo eliminar el cobro")}}

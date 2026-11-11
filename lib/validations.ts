@@ -283,6 +283,19 @@ export const expenseFiltersSchema = z.object({
   category: z.enum(expenseCategories).optional(),
 })
 
+export const paymentTypes = ["advance", "installment", "final", "other"] as const
+export const jobClientPaymentSchema = z.object({
+  payment_date: calendarDateSchema,
+  payment_type: z.enum(paymentTypes),
+  amount: z.coerce.number().finite().positive("El valor del cobro debe ser mayor que cero").max(999_999_999_999.99)
+    .refine((value) => Number.isInteger(value * 100), "El valor del cobro admite maximo dos decimales"),
+  note: optionalText(1_000),
+})
+export const advancePercentageSchema = z.object({
+  advance_percentage: z.coerce.number().finite().min(0).max(100)
+    .refine((value) => Number.isInteger(value * 100), "El porcentaje admite maximo dos decimales"),
+})
+
 export function invalidRequest(error: ZodError) {
   const firstMessage = error.issues[0]?.message
 
