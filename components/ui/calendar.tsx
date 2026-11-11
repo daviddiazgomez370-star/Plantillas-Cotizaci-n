@@ -1,13 +1,19 @@
 'use client'
 
 import * as React from 'react'
+import { format } from 'date-fns'
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from 'lucide-react'
 import { DayPicker } from 'react-day-picker'
+import { es } from 'react-day-picker/locale'
 
 import { cn } from '@/lib/utils'
 import { buttonVariants } from '@/components/ui/button'
 
 export type CalendarProps = React.ComponentProps<typeof DayPicker>
+
+function capitalize(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1)
+}
 
 function Calendar({
   className,
@@ -18,39 +24,41 @@ function Calendar({
   return (
     <DayPicker
       showOutsideDays={showOutsideDays}
-      className={cn('p-3', className)}
+      locale={es}
+      weekStartsOn={1}
+      navLayout="around"
+      formatters={{
+        formatCaption: (month) => capitalize(format(month, 'LLLL yyyy', { locale: es })),
+        formatWeekdayName: (weekday) => capitalize(format(weekday, 'EEE', { locale: es })),
+      }}
+      className={cn('w-full max-w-[30rem]', className)}
       classNames={{
-        months: 'flex flex-col sm:flex-row space-y-4 sm:space-x-4 sm:space-y-0',
-        month: 'space-y-4',
-        caption: 'flex justify-center pt-1 relative items-center',
-        caption_label: 'text-sm font-medium',
-        nav: 'space-x-1 flex items-center',
-        nav_button: cn(
+        root: 'w-full',
+        months: 'w-full',
+        month: 'relative w-full',
+        month_caption: 'flex h-12 items-center justify-center rounded-xl border border-border bg-muted/40 px-12 shadow-sm',
+        caption_label: 'text-sm font-semibold capitalize tracking-tight text-foreground sm:text-base',
+        button_previous: cn(
           buttonVariants({ variant: 'outline' }),
-          'h-7 w-7 bg-transparent p-0 opacity-50 hover:opacity-100',
+          'absolute left-1 top-1 z-10 h-10 w-10 rounded-lg border-border bg-background/80 p-0 text-foreground shadow-sm hover:bg-secondary hover:text-secondary-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
         ),
-        nav_button_previous: 'absolute left-1',
-        nav_button_next: 'absolute right-1',
-        table: 'w-full border-collapse space-y-1',
-        head_row: 'flex',
-        head_cell:
-          'text-muted-foreground rounded-md w-9 font-normal text-[0.8rem]',
-        row: 'flex w-full mt-2',
-        cell: 'h-9 w-9 text-center text-sm p-0 relative [&:has([aria-selected].day-range-end)]:rounded-r-md [&:has([aria-selected].day-outside)]:bg-accent/50 [&:has([aria-selected])]:bg-accent first:[&:has([aria-selected])]:rounded-l-md last:[&:has([aria-selected])]:rounded-r-md focus-within:relative focus-within:z-20',
-        day: cn(
-          buttonVariants({ variant: 'ghost' }),
-          'h-9 w-9 p-0 font-normal aria-selected:opacity-100',
+        button_next: cn(
+          buttonVariants({ variant: 'outline' }),
+          'absolute right-1 top-1 z-10 h-10 w-10 rounded-lg border-border bg-background/80 p-0 text-foreground shadow-sm hover:bg-secondary hover:text-secondary-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
         ),
-        day_range_end: 'day-range-end',
-        day_selected:
-          'bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground',
-        day_today: 'bg-accent text-accent-foreground',
-        day_outside:
-          'day-outside text-muted-foreground aria-selected:bg-accent/50 aria-selected:text-muted-foreground',
-        day_disabled: 'text-muted-foreground opacity-50',
-        day_range_middle:
-          'aria-selected:bg-accent aria-selected:text-accent-foreground',
-        day_hidden: 'invisible',
+        chevron: 'h-4 w-4',
+        month_grid: 'w-full table-fixed border-separate border-spacing-y-1',
+        weekdays: 'border-b border-border/70',
+        weekday: 'h-9 pb-2 text-center text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground',
+        week: '',
+        day: 'h-11 p-0 text-center align-middle sm:h-12',
+        day_button: 'relative mx-auto flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-transparent text-sm font-medium text-foreground transition-colors hover:bg-secondary hover:text-secondary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:h-11 sm:w-11',
+        selected: '[&>button]:border-primary [&>button]:bg-primary [&>button]:text-primary-foreground [&>button]:shadow-[0_0_0_1px_rgba(142,232,194,0.3)] [&>button]:hover:bg-primary',
+        today: '[&>button]:border-primary/80 [&>button]:text-primary',
+        outside: 'opacity-40 [&>button]:text-muted-foreground',
+        disabled: 'opacity-40',
+        hidden: 'invisible',
+        footer: 'mt-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs text-muted-foreground',
         ...classNames,
       }}
       components={{

@@ -223,6 +223,45 @@ export const workerAssignmentSchema = z.object({
   worker_ids: workerIdsSchema,
 })
 
+export const attendanceStatuses = ["worked", "not_worked"] as const
+
+const calendarDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "La fecha debe tener el formato AAAA-MM-DD")
+  .refine((value) => {
+    const [year, month, day] = value.split("-").map(Number)
+    const date = new Date(Date.UTC(year, month - 1, day))
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  }, "La fecha no es valida")
+
+const attendanceRecordSchema = z.object({
+  worker_id: idSchema,
+  status: z.enum(attendanceStatuses),
+  note: optionalText(1_000),
+})
+
+export const attendanceBatchSchema = z
+  .object({
+    work_date: calendarDateSchema,
+    records: z.array(attendanceRecordSchema).min(1, "Registra al menos un trabajador"),
+  })
+  .superRefine((attendance, context) => {
+    const workerIds = attendance.records.map((record) => record.worker_id)
+    if (new Set(workerIds).size !== workerIds.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["records"],
+        message: "No repitas trabajadores para la misma fecha",
+      })
+    }
+  })
+
+export const attendanceFiltersSchema = z.object({
+  month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "El mes debe tener el formato AAAA-MM").optional(),
+  worker_id: idSchema.optional(),
+  status: z.enum(attendanceStatuses).optional(),
+})
+
 export function invalidRequest(error: ZodError) {
   const firstMessage = error.issues[0]?.message
 

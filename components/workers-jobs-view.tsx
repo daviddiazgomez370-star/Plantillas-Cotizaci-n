@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { WorkAttendanceView } from "@/components/work-attendance-view"
 import type { Client, Job, JobStatus, Worker } from "@/lib/database"
 import { toast } from "@/hooks/use-toast"
 
@@ -247,7 +248,7 @@ export function WorkersJobsView() {
 
   return (
     <Tabs defaultValue="workers" className="space-y-6">
-      <TabsList><TabsTrigger value="workers">Trabajadores</TabsTrigger><TabsTrigger value="jobs">Trabajos</TabsTrigger></TabsList>
+      <TabsList><TabsTrigger value="workers">Trabajadores</TabsTrigger><TabsTrigger value="jobs">Trabajos</TabsTrigger><TabsTrigger value="attendance">Días trabajados</TabsTrigger></TabsList>
       {loadError && <Card className="border-destructive"><CardContent className="flex items-start gap-3 py-4"><AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" /><div><p className="font-semibold text-destructive">No fue posible cargar el modulo</p><p className="mt-1 text-sm text-muted-foreground">{loadError}</p><Button variant="outline" size="sm" className="mt-3" onClick={fetchData}>Reintentar</Button></div></CardContent></Card>}
 
       <TabsContent value="workers" className="space-y-6">
@@ -289,6 +290,9 @@ export function WorkersJobsView() {
           <div className="space-y-3 border-t border-border pt-5"><div><h3 className="font-semibold">Trabajadores asignados</h3><p className="text-sm text-muted-foreground">La asignacion no registra asistencia ni pagos.</p></div>{selectedJob.workers?.length ? <div className="flex flex-wrap gap-2">{selectedJob.workers.map((worker) => <div key={worker.id} className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm"><span>{worker.name} <span className="text-muted-foreground">({worker.job_title})</span></span><button className="text-muted-foreground hover:text-destructive" aria-label={`Quitar a ${worker.name}`} onClick={() => removeWorker(worker.id)}><X className="h-4 w-4" /></button></div>)}</div> : <p className="text-sm text-muted-foreground">No hay trabajadores asignados.</p>}{availableWorkers.length > 0 && <div className="rounded-lg border border-border p-4"><p className="mb-3 text-sm font-medium">Agregar trabajadores activos</p><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{availableWorkers.map((worker) => <label key={worker.id} className="flex items-center gap-2 text-sm"><Checkbox checked={assignmentIds.includes(worker.id)} onCheckedChange={() => toggleId(worker.id, assignmentIds, setAssignmentIds)} />{worker.name}</label>)}</div><Button className="mt-4" size="sm" variant="outline" disabled={assignmentIds.length === 0} onClick={assignWorkers}><UserRoundCheck className="mr-2 h-4 w-4" />Asignar seleccionados</Button></div>}</div>
           <div className="space-y-3 border-t border-border pt-5"><h3 className="font-semibold">Historial de estados</h3><div className="space-y-2">{selectedJob.status_history?.map((entry) => <div key={entry.id} className="flex flex-wrap items-center gap-2 text-sm"><Badge variant="outline">{entry.previous_status ? statusLabels[entry.previous_status] : "Creado"}</Badge><span className="text-muted-foreground">a</span><Badge variant={statusVariant(entry.new_status)}>{statusLabels[entry.new_status]}</Badge><span className="text-xs text-muted-foreground">{new Intl.DateTimeFormat("es-CO", { dateStyle: "medium", timeStyle: "short" }).format(new Date(entry.changed_at))}</span></div>)}</div></div>
         </CardContent></Card>}
+      </TabsContent>
+      <TabsContent value="attendance" className="space-y-6">
+        <WorkAttendanceView jobs={jobs} />
       </TabsContent>
     </Tabs>
   )

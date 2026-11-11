@@ -186,7 +186,7 @@ Todas las respuestas son JSON. Las solicitudes de creación y actualización val
 | `POST` | `/api/clients` | Crea un cliente. |
 | `GET` / `PUT` / `DELETE` | `/api/clients/:id` | Consulta, actualiza o elimina un cliente. |
 
-## Trabajadores y trabajos (Fase 1)
+## Trabajadores y trabajos (Fases 1 y 2)
 
 La migracion `005_workers_jobs.sql` incorpora este modulo sin implementar asistencia, gastos, nomina, pagos ni reparto de utilidades.
 
@@ -196,12 +196,17 @@ La migracion `005_workers_jobs.sql` incorpora este modulo sin implementar asiste
 | `jobs` | Trabajos con valor acordado `DECIMAL(14,2)`, cliente opcional, referencia opcional a cotizacion, fechas, estado y observaciones. |
 | `job_workers` | Relacion muchos-a-muchos entre trabajos y trabajadores. |
 | `job_status_history` | Registro de cada estado inicial y transicion de un trabajo. |
+| `work_attendance` | Asistencia por trabajo, trabajador y dia de calendario. |
 
 Los tipos internos de remuneracion son `daily_rate` y `profit_share`. Una tarifa diaria solo se admite para `daily_rate`; por ejemplo, el ayudante puede guardar `100000` como tarifa diaria COP. No hay valores monetarios fijos en los componentes.
 
 Los estados internos son `accepted`, `in_progress` y `completed`, mostrados como **Aceptado**, **En proceso** y **Finalizado**. El flujo permitido es `accepted -> in_progress -> completed`; es un estado operativo, no financiero.
 
 `jobs.client_id` y `jobs.quotation_id` son claves foraneas opcionales con `ON DELETE SET NULL`. Un trabajo puede existir sin cliente registrado y la futura conversion Cotizacion -> Trabajo puede usar `quotation_id` sin cambiar el esquema.
+
+La migracion `006_work_attendance.sql` agrega asistencia sin incluir nomina, pagos, gastos ni reparto. Cada fila de `work_attendance` usa UUID, fecha `DATE`, estado `worked` o `not_worked`, nota opcional y marcas de tiempo. La restriccion `UNIQUE (job_id, worker_id, work_date)` evita que un trabajador tenga dos registros para el mismo trabajo y dia. Sus claves foraneas a `jobs` y `workers` usan `ON DELETE RESTRICT` para proteger el historial; los indices por trabajo/fecha y trabajador/fecha soportan las consultas del calendario y tabla.
+
+Solo se puede registrar o corregir asistencia mientras el trabajo esta **En proceso**. El servidor comprueba dentro de una transaccion que cada trabajador siga asignado en `job_workers` y activo. Los trabajos **Aceptados** y **Finalizados** solo permiten consulta; los registros previos de trabajadores inactivos o trabajos finalizados permanecen visibles. Las fechas se envian y almacenan como `AAAA-MM-DD`, sin convertirlas a instantes UTC.
 
 ### API del modulo
 
@@ -215,6 +220,8 @@ Los estados internos son `accepted`, `in_progress` y `completed`, mostrados como
 | `PATCH` | `/api/jobs/:id/status` | Aplica la siguiente transicion valida de estado. |
 | `POST` | `/api/jobs/:id/workers` | Asigna uno o varios trabajadores activos. |
 | `DELETE` | `/api/jobs/:id/workers/:workerId` | Quita un trabajador de un trabajo. |
+| `GET` | `/api/jobs/:id/attendance?month=AAAA-MM&worker_id=:id&status=worked|not_worked` | Consulta asistencia, contadores y detalle del trabajo. Los filtros son opcionales. |
+| `POST` | `/api/jobs/:id/attendance` | Crea o actualiza en lote la asistencia de una fecha. Recibe `work_date` y `records`; es transaccional. |
 
 Los endpoints validan UUIDs, importes, fechas, estados, tipos de remuneracion y asignaciones con Zod. Devuelven `201` al crear, `400` para entrada invalida, `404` para recursos inexistentes y `409` para conflictos como una transicion o asignacion duplicada.
 
@@ -229,6 +236,8 @@ npm run build
 ```
 
 En `/trabajadores-trabajos`, registra un ayudante de tarifa diaria con valor `100000`, editalo, desactivalo y reactivalo. Despues crea un trabajo, asocialo opcionalmente a un cliente, asigna trabajadores, edita sus datos y avanza por Aceptado, En proceso y Finalizado. Recarga el navegador y consulta `workers`, `jobs`, `job_workers` y `job_status_history` en phpMyAdmin para comprobar la persistencia.
+
+En la pestaña **Dias trabajados**, selecciona un trabajo y un mes. El calendario muestra un indicador y una leyenda para los dias con registros; al seleccionar una fecha se pueden marcar los trabajadores asignados como **Trabajado** o **No trabajado** y anotar una observacion opcional. Un solo guardado actualiza todos los trabajadores seleccionados de esa fecha. La tabla usa los mismos datos persistidos, con filtros de mes, trabajador y estado, y los contadores muestran solo la cantidad de dias trabajados por trabajador en el mes, sin montos.
 
 ## Estructura del proyecto
 

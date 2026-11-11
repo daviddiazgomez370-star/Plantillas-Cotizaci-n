@@ -1,6 +1,6 @@
 import { query, generateUUID, transaction } from "./mysql"
 import { ConflictError, ResourceNotFoundError } from "./errors"
-import type { PoolConnection } from "mysql2/promise"
+import type { PoolConnection, RowDataPacket } from "mysql2/promise"
 
 export type QuotationStatus = "pending" | "approved" | "converted" | "cancelled"
 
@@ -885,4 +885,206 @@ export async function removeWorkerFromJob(jobId: string, workerId: string) {
     }
   })
   return getJobById(jobId)
+}
+
+// ---- Dias trabajados y asistencia (Fase 2) ----
+
+export type AttendanceStatus = "worked" | "not_worked"
+
+export interface WorkAttendance {
+  id: string
+  job_id: string
+  job_name: string
+  worker_id: string
+  worker_name: string
+  worker_job_title: string
+  worker_is_active: boolean
+  work_date: string
+  status: AttendanceStatus
+  note?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface AttendanceCount {
+  worker_id: string
+  worker_name: string
+  worker_job_title: string
+  worker_is_active: boolean
+  worked_days: number
+}
+
+type WorkAttendanceRow = Omit<WorkAttendance, "worker_is_active" | "note"> & {
+  worker_is_active: number
+  note: string | null
+}
+
+type AttendanceCountRow = Omit<AttendanceCount, "worker_is_active" | "worked_days"> & {
+  worker_is_active: number
+  worked_days: number | string
+}
+
+export interface AttendanceFilters {
+  month?: string
+  worker_id?: string
+  status?: AttendanceStatus
+}
+
+export interface AttendanceInput {
+  work_date: string
+  records: Array<{
+    worker_id: string
+    status: AttendanceStatus
+    note?: string
+  }>
+}
+
+type AssignedWorkerRow = RowDataPacket & {
+  worker_id: string
+  is_active: number
+}
+
+type AttendanceIdRow = RowDataPacket & {
+  id: string
+}
+
+function normalizeWorkAttendance(row: WorkAttendanceRow): WorkAttendance {
+  return {
+    ...row,
+    worker_is_active: Boolean(row.worker_is_active),
+    note: row.note || undefined,
+  }
+}
+
+export async function getJobAttendance(jobId: string, filters: AttendanceFilters = {}) {
+  const job = await getJobById(jobId)
+  const where = ["wa.job_id = ?"]
+  const params: Array<string> = [jobId]
+
+  if (filters.month) {
+    const firstDay = `${filters.month}-01`
+    where.push("wa.work_date >= ?", "wa.work_date < DATE_ADD(?, INTERVAL 1 MONTH)")
+    params.push(firstDay, firstDay)
+  }
+  if (filters.worker_id) {
+    where.push("wa.worker_id = ?")
+    params.push(filters.worker_id)
+  }
+  if (filters.status) {
+    where.push("wa.status = ?")
+    params.push(filters.status)
+  }
+
+  const attendance = await query<WorkAttendanceRow[]>(`
+    SELECT
+      wa.id, wa.job_id, j.name AS job_name, wa.worker_id, w.name AS worker_name,
+      w.job_title AS worker_job_title, w.is_active AS worker_is_active,
+      DATE_FORMAT(wa.work_date, '%Y-%m-%d') AS work_date, wa.status, wa.note,
+      wa.created_at, wa.updated_at
+    FROM work_attendance wa
+    INNER JOIN jobs j ON j.id = wa.job_id
+    INNER JOIN workers w ON w.id = wa.worker_id
+    WHERE ${where.join(" AND ")}
+    ORDER BY wa.work_date DESC, w.name ASC
+  `, params)
+
+  const counterParams: Array<string> = [jobId, jobId, jobId]
+  const counterDateFilter = filters.month
+    ? "AND wa.work_date >= ? AND wa.work_date < DATE_ADD(?, INTERVAL 1 MONTH)"
+    : ""
+  if (filters.month) {
+    const firstDay = `${filters.month}-01`
+    counterParams.push(firstDay, firstDay)
+  }
+
+  const counts = await query<AttendanceCountRow[]>(`
+    SELECT
+      participants.worker_id, w.name AS worker_name, w.job_title AS worker_job_title,
+      w.is_active AS worker_is_active, COUNT(wa.id) AS worked_days
+    FROM (
+      SELECT worker_id FROM job_workers WHERE job_id = ?
+      UNION
+      SELECT worker_id FROM work_attendance WHERE job_id = ?
+    ) AS participants
+    INNER JOIN workers w ON w.id = participants.worker_id
+    LEFT JOIN work_attendance wa
+      ON wa.job_id = ?
+      AND wa.worker_id = participants.worker_id
+      AND wa.status = 'worked'
+      ${counterDateFilter}
+    GROUP BY participants.worker_id, w.name, w.job_title, w.is_active
+    ORDER BY w.name ASC
+  `, counterParams)
+
+  return {
+    job,
+    records: attendance.map(normalizeWorkAttendance),
+    counts: counts.map((count) => ({
+      ...count,
+      worker_is_active: Boolean(count.worker_is_active),
+      worked_days: Number(count.worked_days),
+    })),
+  }
+}
+
+export async function saveJobAttendance(jobId: string, attendance: AttendanceInput) {
+  let created = 0
+  let updated = 0
+
+  await transaction(async (connection) => {
+    const job = await assertJobExists(connection, jobId, true)
+    if (job.status === "accepted") {
+      throw new ConflictError("La asistencia solo se puede registrar cuando el trabajo esta En proceso")
+    }
+    if (job.status === "completed") {
+      throw new ConflictError("No se puede modificar la asistencia de un trabajo Finalizado")
+    }
+
+    const workerIds = attendance.records.map((record) => record.worker_id)
+    const placeholders = workerIds.map(() => "?").join(", ")
+    const [assignedWorkers] = await connection.execute<AssignedWorkerRow[]>(
+      `SELECT jw.worker_id, w.is_active
+       FROM job_workers jw
+       INNER JOIN workers w ON w.id = jw.worker_id
+       WHERE jw.job_id = ? AND jw.worker_id IN (${placeholders})
+       FOR UPDATE`,
+      [jobId, ...workerIds]
+    )
+    const assignedById = new Map(assignedWorkers.map((worker) => [worker.worker_id, worker]))
+    const missingWorker = workerIds.find((workerId) => !assignedById.has(workerId))
+    if (missingWorker) {
+      throw new ConflictError("Solo puedes registrar asistencia para trabajadores asignados al trabajo")
+    }
+    if (assignedWorkers.some((worker) => !worker.is_active)) {
+      throw new ConflictError("No puedes registrar asistencia nueva para trabajadores inactivos")
+    }
+
+    for (const record of attendance.records) {
+      const [existing] = await connection.execute<AttendanceIdRow[]>(
+        `SELECT id FROM work_attendance
+         WHERE job_id = ? AND worker_id = ? AND work_date = ?
+         FOR UPDATE`,
+        [jobId, record.worker_id, attendance.work_date]
+      )
+
+      if (existing.length > 0) {
+        await connection.execute(
+          `UPDATE work_attendance
+           SET status = ?, note = ?, updated_at = NOW()
+           WHERE id = ?`,
+          [record.status, record.note || null, existing[0].id]
+        )
+        updated += 1
+      } else {
+        await connection.execute(
+          `INSERT INTO work_attendance (id, job_id, worker_id, work_date, status, note)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [generateUUID(), jobId, record.worker_id, attendance.work_date, record.status, record.note || null]
+        )
+        created += 1
+      }
+    }
+  })
+
+  return { created, updated }
 }
