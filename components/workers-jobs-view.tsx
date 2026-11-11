@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { WorkAttendanceView } from "@/components/work-attendance-view"
+import { JobExpensesView } from "@/components/job-expenses-view"
 import type { Client, Job, JobStatus, Worker } from "@/lib/database"
 import { toast } from "@/hooks/use-toast"
 
@@ -248,7 +249,7 @@ export function WorkersJobsView() {
 
   return (
     <Tabs defaultValue="workers" className="space-y-6">
-      <TabsList><TabsTrigger value="workers">Trabajadores</TabsTrigger><TabsTrigger value="jobs">Trabajos</TabsTrigger><TabsTrigger value="attendance">Días trabajados</TabsTrigger></TabsList>
+      <TabsList><TabsTrigger value="workers">Trabajadores</TabsTrigger><TabsTrigger value="jobs">Trabajos</TabsTrigger><TabsTrigger value="attendance">Días trabajados</TabsTrigger><TabsTrigger value="expenses">Gastos</TabsTrigger></TabsList>
       {loadError && <Card className="border-destructive"><CardContent className="flex items-start gap-3 py-4"><AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" /><div><p className="font-semibold text-destructive">No fue posible cargar el modulo</p><p className="mt-1 text-sm text-muted-foreground">{loadError}</p><Button variant="outline" size="sm" className="mt-3" onClick={fetchData}>Reintentar</Button></div></CardContent></Card>}
 
       <TabsContent value="workers" className="space-y-6">
@@ -293,6 +294,9 @@ export function WorkersJobsView() {
       </TabsContent>
       <TabsContent value="attendance" className="space-y-6">
         <WorkAttendanceView jobs={jobs} />
+      </TabsContent>
+      <TabsContent value="expenses" className="space-y-6">
+        <JobExpensesView jobs={jobs} />
       </TabsContent>
     </Tabs>
   )

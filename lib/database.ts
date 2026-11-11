@@ -1088,3 +1088,182 @@ export async function saveJobAttendance(jobId: string, attendance: AttendanceInp
 
   return { created, updated }
 }
+
+// ---- Gastos por trabajo (Fase 3) ----
+
+export type ExpenseCategory = "materials" | "transport" | "tools" | "food" | "services" | "other"
+
+export interface JobExpense {
+  id: string
+  job_id: string
+  expense_date: string
+  category: ExpenseCategory
+  description: string
+  amount: number
+  note?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface JobExpenseInput {
+  expense_date: string
+  category: ExpenseCategory
+  description: string
+  amount: number
+  note?: string
+}
+
+export interface ExpenseFilters {
+  month?: string
+  category?: ExpenseCategory
+}
+
+export interface ExpenseCategoryTotal {
+  category: ExpenseCategory
+  total: number
+}
+
+type JobExpenseRow = Omit<JobExpense, "amount" | "note"> & {
+  amount: number | string
+  note: string | null
+}
+
+type ExpenseSummaryRow = RowDataPacket & {
+  expense_count: number | string
+  total_expenses: number | string | null
+}
+
+type ExpenseCategoryTotalRow = RowDataPacket & {
+  category: ExpenseCategory
+  total: number | string
+}
+
+type ExpenseIdRow = RowDataPacket & {
+  id: string
+}
+
+function normalizeJobExpense(row: JobExpenseRow): JobExpense {
+  return {
+    ...row,
+    amount: Number(row.amount),
+    note: row.note || undefined,
+  }
+}
+
+function expenseWhere(jobId: string, filters: ExpenseFilters) {
+  const where = ["job_id = ?"]
+  const params: string[] = [jobId]
+
+  if (filters.month) {
+    const firstDay = `${filters.month}-01`
+    where.push("expense_date >= ?", "expense_date < DATE_ADD(?, INTERVAL 1 MONTH)")
+    params.push(firstDay, firstDay)
+  }
+  if (filters.category) {
+    where.push("category = ?")
+    params.push(filters.category)
+  }
+  return { where, params }
+}
+
+async function getJobExpenseById(jobId: string, expenseId: string) {
+  const expenses = await query<JobExpenseRow[]>(`
+    SELECT id, job_id, DATE_FORMAT(expense_date, '%Y-%m-%d') AS expense_date,
+      category, description, amount, note, created_at, updated_at
+    FROM job_expenses
+    WHERE id = ? AND job_id = ?
+  `, [expenseId, jobId])
+  if (expenses.length === 0) throw new ResourceNotFoundError("Gasto no encontrado para este trabajo")
+  return normalizeJobExpense(expenses[0])
+}
+
+function assertExpensesEditable(status: JobStatus) {
+  if (status === "completed") {
+    throw new ConflictError("No se pueden modificar los gastos de un trabajo Finalizado")
+  }
+}
+
+export async function getJobExpenses(jobId: string, filters: ExpenseFilters = {}) {
+  const job = await getJobById(jobId)
+  const { where, params } = expenseWhere(jobId, filters)
+  const condition = where.join(" AND ")
+
+  const [expenses, summaries, categoryTotals] = await Promise.all([
+    query<JobExpenseRow[]>(`
+      SELECT id, job_id, DATE_FORMAT(expense_date, '%Y-%m-%d') AS expense_date,
+        category, description, amount, note, created_at, updated_at
+      FROM job_expenses
+      WHERE ${condition}
+      ORDER BY expense_date DESC, created_at DESC
+    `, params),
+    query<ExpenseSummaryRow[]>(`
+      SELECT COUNT(*) AS expense_count, COALESCE(SUM(amount), 0) AS total_expenses
+      FROM job_expenses
+      WHERE ${condition}
+    `, params),
+    query<ExpenseCategoryTotalRow[]>(`
+      SELECT category, SUM(amount) AS total
+      FROM job_expenses
+      WHERE ${condition}
+      GROUP BY category
+      ORDER BY category ASC
+    `, params),
+  ])
+
+  const summary = summaries[0]
+  return {
+    job,
+    expenses: expenses.map(normalizeJobExpense),
+    summary: {
+      expense_count: Number(summary?.expense_count || 0),
+      total_expenses: Number(summary?.total_expenses || 0),
+      by_category: categoryTotals.map((total) => ({ category: total.category, total: Number(total.total) })),
+    },
+  }
+}
+
+export async function saveJobExpense(jobId: string, expense: JobExpenseInput) {
+  const id = generateUUID()
+  await transaction(async (connection) => {
+    const job = await assertJobExists(connection, jobId, true)
+    assertExpensesEditable(job.status)
+    await connection.execute(
+      `INSERT INTO job_expenses (id, job_id, expense_date, category, description, amount, note)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, jobId, expense.expense_date, expense.category, expense.description, expense.amount, expense.note || null]
+    )
+  })
+  return getJobExpenseById(jobId, id)
+}
+
+export async function updateJobExpense(jobId: string, expenseId: string, expense: JobExpenseInput) {
+  await transaction(async (connection) => {
+    const job = await assertJobExists(connection, jobId, true)
+    assertExpensesEditable(job.status)
+    const [existing] = await connection.execute<ExpenseIdRow[]>(
+      "SELECT id FROM job_expenses WHERE id = ? AND job_id = ? FOR UPDATE",
+      [expenseId, jobId]
+    )
+    if (existing.length === 0) throw new ResourceNotFoundError("Gasto no encontrado para este trabajo")
+    await connection.execute(
+      `UPDATE job_expenses
+       SET expense_date = ?, category = ?, description = ?, amount = ?, note = ?, updated_at = NOW()
+       WHERE id = ?`,
+      [expense.expense_date, expense.category, expense.description, expense.amount, expense.note || null, expenseId]
+    )
+  })
+  return getJobExpenseById(jobId, expenseId)
+}
+
+export async function deleteJobExpense(jobId: string, expenseId: string) {
+  await transaction(async (connection) => {
+    const job = await assertJobExists(connection, jobId, true)
+    assertExpensesEditable(job.status)
+    const [existing] = await connection.execute<ExpenseIdRow[]>(
+      "SELECT id FROM job_expenses WHERE id = ? AND job_id = ? FOR UPDATE",
+      [expenseId, jobId]
+    )
+    if (existing.length === 0) throw new ResourceNotFoundError("Gasto no encontrado para este trabajo")
+    await connection.execute("DELETE FROM job_expenses WHERE id = ?", [expenseId])
+  })
+}

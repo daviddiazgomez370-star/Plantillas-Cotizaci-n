@@ -225,7 +225,7 @@ export const workerAssignmentSchema = z.object({
 
 export const attendanceStatuses = ["worked", "not_worked"] as const
 
-const calendarDateSchema = z
+export const calendarDateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "La fecha debe tener el formato AAAA-MM-DD")
   .refine((value) => {
@@ -260,6 +260,27 @@ export const attendanceFiltersSchema = z.object({
   month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "El mes debe tener el formato AAAA-MM").optional(),
   worker_id: idSchema.optional(),
   status: z.enum(attendanceStatuses).optional(),
+})
+
+export const expenseCategories = ["materials", "transport", "tools", "food", "services", "other"] as const
+
+const expenseAmount = z.coerce
+  .number()
+  .finite()
+  .positive("El valor del gasto debe ser mayor que cero")
+  .max(999_999_999_999.99, "El valor del gasto es demasiado alto")
+
+export const jobExpenseSchema = z.object({
+  expense_date: calendarDateSchema,
+  category: z.enum(expenseCategories),
+  description: requiredText("La descripcion", 500),
+  amount: expenseAmount,
+  note: optionalText(1_000),
+})
+
+export const expenseFiltersSchema = z.object({
+  month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "El mes debe tener el formato AAAA-MM").optional(),
+  category: z.enum(expenseCategories).optional(),
 })
 
 export function invalidRequest(error: ZodError) {
