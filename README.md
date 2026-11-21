@@ -186,7 +186,7 @@ Todas las respuestas son JSON. Las solicitudes de creación y actualización val
 | `POST` | `/api/clients` | Crea un cliente. |
 | `GET` / `PUT` / `DELETE` | `/api/clients/:id` | Consulta, actualiza o elimina un cliente. |
 
-## Trabajadores y trabajos (Fases 1, 2, 3 y 4)
+## Trabajadores y trabajos (Fases 1, 2, 3, 4 y 5 parcial)
 
 La migracion `005_workers_jobs.sql` incorpora este modulo sin implementar asistencia, gastos, nomina, pagos ni reparto de utilidades.
 
@@ -199,6 +199,8 @@ La migracion `005_workers_jobs.sql` incorpora este modulo sin implementar asiste
 | `work_attendance` | Asistencia por trabajo, trabajador y dia de calendario. |
 | `job_expenses` | Gastos reales asociados a un trabajo. |
 | `job_client_payments` | Cobros recibidos del cliente por trabajo. |
+| `worker_payments` | Cabecera de pagos por dias trabajados a trabajadores con tarifa diaria. |
+| `worker_payment_days` | Dias de asistencia incluidos en cada pago, con tarifa historica. |
 
 Los tipos internos de remuneracion son `daily_rate` y `profit_share`. Una tarifa diaria solo se admite para `daily_rate`; por ejemplo, el ayudante puede guardar `100000` como tarifa diaria COP. No hay valores monetarios fijos en los componentes.
 
@@ -217,6 +219,8 @@ La migracion `008_job_client_payments.sql` agrega `jobs.advance_percentage` como
 El total recibido se calcula exclusivamente desde los cobros persistidos. Por trabajo, la interfaz muestra valor acordado, adelanto esperado, total recibido, saldo pendiente y estado financiero derivado: **Sin pagos** cuando el total es cero, **Pago parcial** cuando es menor al valor acordado y **Pagado** cuando coincide exactamente. Los trabajos **Finalizados** conservan y permiten crear, editar y eliminar cobros, pues el cliente puede pagar despues del cierre operativo.
 
 El servidor rechaza con `409` cualquier alta o edicion que supere el valor acordado. La verificacion ocurre en una transaccion: bloquea con `SELECT ... FOR UPDATE` la fila estable del trabajo, suma los cobros vigentes, valida el nuevo saldo y solo entonces inserta o actualiza. Asi dos solicitudes concurrentes no pueden registrar un sobrepago.
+
+La migracion `009_worker_payments.sql` incorpora pagos a trabajadores exclusivamente para asistencias `worked` de trabajadores `daily_rate`. Cada detalle persiste `daily_rate_snapshot` y `amount`, por lo que un cambio posterior de tarifa no altera el historial. La restriccion `UNIQUE (attendance_id)` en `worker_payment_days`, junto con bloqueos transaccionales, impide pagar un mismo dia dos veces. Los pagos estan separados de `job_expenses` y un trabajo **Finalizado** puede recibir pagos pendientes. Un pago puede eliminarse para liberar sus dias sin cambiar la asistencia; por ello los detalles usan `ON DELETE CASCADE` hacia su cabecera y protegen la asistencia con `ON DELETE RESTRICT`. Una asistencia incluida en un pago no puede modificarse y responde `409` hasta que se elimine ese pago.
 
 ### API del modulo
 
@@ -237,6 +241,8 @@ El servidor rechaza con `409` cualquier alta o edicion que supere el valor acord
 | `GET` / `POST` | `/api/jobs/:id/payments` | Consulta cobros o registra un cobro del cliente. |
 | `PATCH` | `/api/jobs/:id/payments` | Actualiza `advance_percentage`; no crea ni altera cobros. |
 | `PATCH` / `DELETE` | `/api/jobs/:id/payments/:paymentId` | Edita o elimina un cobro, verificando que pertenezca al trabajo. |
+| `GET` / `POST` | `/api/jobs/:id/worker-payments` | Consulta pagos, dias incluidos y dias `worked` pendientes, o registra un pago calculado en el servidor. |
+| `DELETE` | `/api/jobs/:id/worker-payments/:paymentId` | Elimina un pago y deja sus asistencias disponibles de nuevo. |
 
 Los endpoints validan UUIDs, importes, fechas, estados, tipos de remuneracion y asignaciones con Zod. Devuelven `201` al crear, `400` para entrada invalida, `404` para recursos inexistentes y `409` para conflictos como una transicion o asignacion duplicada.
 

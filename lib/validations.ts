@@ -296,6 +296,23 @@ export const advancePercentageSchema = z.object({
     .refine((value) => Number.isInteger(value * 100), "El porcentaje admite maximo dos decimales"),
 })
 
+export const workerPaymentSchema = z
+  .object({
+    worker_id: idSchema,
+    payment_date: calendarDateSchema,
+    attendance_ids: z.array(idSchema).min(1, "Selecciona al menos un dia trabajado"),
+    note: optionalText(1_000),
+  })
+  .superRefine((payment, context) => {
+    if (new Set(payment.attendance_ids).size !== payment.attendance_ids.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["attendance_ids"],
+        message: "No repitas asistencias en el mismo pago",
+      })
+    }
+  })
+
 export function invalidRequest(error: ZodError) {
   const firstMessage = error.issues[0]?.message
 

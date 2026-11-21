@@ -1070,6 +1070,13 @@ export async function saveJobAttendance(jobId: string, attendance: AttendanceInp
       )
 
       if (existing.length > 0) {
+        const [paidDays] = await connection.execute<RowDataPacket[]>(
+          "SELECT id FROM worker_payment_days WHERE attendance_id = ? FOR UPDATE",
+          [existing[0].id]
+        )
+        if (paidDays.length > 0) {
+          throw new ConflictError("No se puede modificar esta asistencia porque ya esta incluida en un pago al trabajador")
+        }
         await connection.execute(
           `UPDATE work_attendance
            SET status = ?, note = ?, updated_at = NOW()
@@ -1307,3 +1314,237 @@ export async function saveJobPayment(jobId: string, payment: JobClientPaymentInp
 export async function updateJobPayment(jobId: string, id: string, payment: JobClientPaymentInput) { await transaction(async c => { const agreedValue=await lockJobForPayment(c,jobId); const [found]=await c.execute<RowDataPacket[]>("SELECT id FROM job_client_payments WHERE id=? AND job_id=? FOR UPDATE",[id,jobId]); if(!found.length) throw new ResourceNotFoundError("Cobro no encontrado para este trabajo"); await ensurePaymentFits(c,jobId,payment.amount,id,agreedValue); await c.execute("UPDATE job_client_payments SET payment_date=?,payment_type=?,amount=?,note=?,updated_at=NOW() WHERE id=?",[payment.payment_date,payment.payment_type,payment.amount,payment.note||null,id]) }) }
 export async function deleteJobPayment(jobId: string, id: string) { await transaction(async c => { await assertJobExists(c,jobId,true); const [found]=await c.execute<RowDataPacket[]>("SELECT id FROM job_client_payments WHERE id=? AND job_id=? FOR UPDATE",[id,jobId]); if(!found.length) throw new ResourceNotFoundError("Cobro no encontrado para este trabajo"); await c.execute("DELETE FROM job_client_payments WHERE id=?",[id]) }) }
 export async function updateJobAdvancePercentage(jobId: string, percentage: number) { await transaction(async c => { const job=await assertJobExists(c,jobId,true); await c.execute("UPDATE jobs SET advance_percentage=?, updated_at=NOW() WHERE id=?",[percentage,job.id]) }); return getJobPayments(jobId) }
+
+// ---- Pagos por dias trabajados a trabajadores (Fase 5) ----
+
+export interface WorkerPaymentDay {
+  id: string
+  attendance_id: string
+  work_date: string
+  daily_rate_snapshot: number
+  amount: number
+  created_at: string
+}
+
+export interface WorkerPayment {
+  id: string
+  job_id: string
+  worker_id: string
+  worker_name: string
+  worker_job_title: string
+  payment_date: string
+  total_amount: number
+  note?: string
+  created_at: string
+  updated_at: string
+  days: WorkerPaymentDay[]
+}
+
+export interface PendingWorkerPaymentDay {
+  attendance_id: string
+  worker_id: string
+  worker_name: string
+  worker_job_title: string
+  work_date: string
+}
+
+export interface WorkerPaymentInput {
+  worker_id: string
+  payment_date: string
+  attendance_ids: string[]
+  note?: string
+}
+
+type WorkerPaymentRow = Omit<WorkerPayment, "total_amount" | "note" | "days"> & {
+  total_amount: number | string
+  note: string | null
+}
+
+type WorkerPaymentDayRow = Omit<WorkerPaymentDay, "daily_rate_snapshot" | "amount"> & {
+  worker_payment_id: string
+  daily_rate_snapshot: number | string
+  amount: number | string
+}
+
+type PendingWorkerPaymentDayRow = PendingWorkerPaymentDay
+
+type PaymentWorkerRow = RowDataPacket & {
+  id: string
+  compensation_type: WorkerCompensationType
+  daily_rate: number | string | null
+}
+
+type PaymentAttendanceRow = RowDataPacket & {
+  id: string
+  job_id: string
+  worker_id: string
+  status: AttendanceStatus
+}
+
+function normalizeWorkerPaymentDay(row: WorkerPaymentDayRow): WorkerPaymentDay {
+  return {
+    id: row.id,
+    attendance_id: row.attendance_id,
+    work_date: row.work_date,
+    daily_rate_snapshot: Number(row.daily_rate_snapshot),
+    amount: Number(row.amount),
+    created_at: row.created_at,
+  }
+}
+
+function isDuplicateKeyError(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ER_DUP_ENTRY"
+}
+
+export async function getJobWorkerPayments(jobId: string) {
+  const job = await getJobById(jobId)
+  const paymentRows = await query<WorkerPaymentRow[]>(`
+    SELECT wp.id, wp.job_id, wp.worker_id, w.name AS worker_name, w.job_title AS worker_job_title,
+      DATE_FORMAT(wp.payment_date, '%Y-%m-%d') AS payment_date,
+      wp.total_amount, wp.note, wp.created_at, wp.updated_at
+    FROM worker_payments wp
+    INNER JOIN workers w ON w.id = wp.worker_id
+    WHERE wp.job_id = ?
+    ORDER BY wp.payment_date DESC, wp.created_at DESC
+  `, [jobId])
+
+  const paymentIds = paymentRows.map((payment) => payment.id)
+  const daysByPayment = new Map<string, WorkerPaymentDay[]>()
+  if (paymentIds.length > 0) {
+    const placeholders = paymentIds.map(() => "?").join(", ")
+    const dayRows = await query<WorkerPaymentDayRow[]>(`
+      SELECT wpd.id, wpd.worker_payment_id, wpd.attendance_id,
+        DATE_FORMAT(wa.work_date, '%Y-%m-%d') AS work_date,
+        wpd.daily_rate_snapshot, wpd.amount, wpd.created_at
+      FROM worker_payment_days wpd
+      INNER JOIN work_attendance wa ON wa.id = wpd.attendance_id
+      WHERE wpd.worker_payment_id IN (${placeholders})
+      ORDER BY wa.work_date ASC, wpd.created_at ASC
+    `, paymentIds)
+    for (const day of dayRows) {
+      const days = daysByPayment.get(day.worker_payment_id) || []
+      days.push(normalizeWorkerPaymentDay(day))
+      daysByPayment.set(day.worker_payment_id, days)
+    }
+  }
+
+  const pendingDays = await query<PendingWorkerPaymentDayRow[]>(`
+    SELECT wa.id AS attendance_id, wa.worker_id, w.name AS worker_name,
+      w.job_title AS worker_job_title, DATE_FORMAT(wa.work_date, '%Y-%m-%d') AS work_date
+    FROM work_attendance wa
+    INNER JOIN workers w ON w.id = wa.worker_id
+    LEFT JOIN worker_payment_days wpd ON wpd.attendance_id = wa.id
+    WHERE wa.job_id = ? AND wa.status = 'worked' AND wpd.id IS NULL
+    ORDER BY wa.work_date ASC, w.name ASC
+  `, [jobId])
+
+  const payments: WorkerPayment[] = paymentRows.map((payment) => ({
+    ...payment,
+    total_amount: Number(payment.total_amount),
+    note: payment.note || undefined,
+    days: daysByPayment.get(payment.id) || [],
+  }))
+
+  return { job, payments, pending_days: pendingDays }
+}
+
+export async function saveWorkerPayment(jobId: string, payment: WorkerPaymentInput) {
+  const paymentId = generateUUID()
+
+  try {
+    await transaction(async (connection) => {
+      // Serializa pagos del trabajo y coordina tambien con las correcciones de asistencia.
+      await assertJobExists(connection, jobId, true)
+
+      const [workers] = await connection.execute<PaymentWorkerRow[]>(
+        "SELECT id, compensation_type, daily_rate FROM workers WHERE id = ? FOR UPDATE",
+        [payment.worker_id]
+      )
+      const worker = workers[0]
+      if (!worker) throw new ResourceNotFoundError("Trabajador no encontrado")
+      if (worker.compensation_type !== "daily_rate") {
+        throw new ConflictError("Solo los trabajadores con tarifa diaria pueden recibir este pago")
+      }
+
+      const dailyRateMinor = toMinorUnits(Number(worker.daily_rate))
+      if (!Number.isFinite(Number(worker.daily_rate)) || dailyRateMinor <= 0) {
+        throw new ConflictError("El trabajador debe tener una tarifa diaria valida y mayor que cero")
+      }
+
+      const placeholders = payment.attendance_ids.map(() => "?").join(", ")
+      const [attendance] = await connection.execute<PaymentAttendanceRow[]>(
+        `SELECT id, job_id, worker_id, status
+         FROM work_attendance
+         WHERE id IN (${placeholders})
+         ORDER BY id
+         FOR UPDATE`,
+        payment.attendance_ids
+      )
+      if (attendance.length !== payment.attendance_ids.length) {
+        throw new ResourceNotFoundError("Una de las asistencias seleccionadas no existe")
+      }
+      if (attendance.some((record) => record.job_id !== jobId)) {
+        throw new ConflictError("Todas las asistencias deben pertenecer al trabajo indicado")
+      }
+      if (attendance.some((record) => record.worker_id !== payment.worker_id)) {
+        throw new ConflictError("Todas las asistencias deben pertenecer al trabajador indicado")
+      }
+      if (attendance.some((record) => record.status !== "worked")) {
+        throw new ConflictError("Solo se pueden pagar asistencias marcadas como trabajado")
+      }
+
+      const [alreadyPaid] = await connection.execute<RowDataPacket[]>(
+        `SELECT attendance_id FROM worker_payment_days WHERE attendance_id IN (${placeholders}) FOR UPDATE`,
+        payment.attendance_ids
+      )
+      if (alreadyPaid.length > 0) {
+        throw new ConflictError("Una de las asistencias seleccionadas ya esta incluida en un pago al trabajador")
+      }
+
+      const totalMinor = dailyRateMinor * attendance.length
+      if (totalMinor > 99_999_999_999_999) {
+        throw new ConflictError("El total del pago es demasiado alto")
+      }
+      const totalAmount = fromMinorUnits(totalMinor)
+      const dailyRate = fromMinorUnits(dailyRateMinor)
+
+      await connection.execute(
+        `INSERT INTO worker_payments (id, job_id, worker_id, payment_date, total_amount, note)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [paymentId, jobId, payment.worker_id, payment.payment_date, totalAmount, payment.note || null]
+      )
+      for (const record of attendance) {
+        await connection.execute(
+          `INSERT INTO worker_payment_days
+             (id, worker_payment_id, attendance_id, daily_rate_snapshot, amount)
+           VALUES (?, ?, ?, ?, ?)`,
+          [generateUUID(), paymentId, record.id, dailyRate, dailyRate]
+        )
+      }
+    })
+  } catch (error) {
+    // La restriccion UNIQUE(attendance_id) es la ultima barrera ante carreras de concurrencia.
+    if (isDuplicateKeyError(error)) {
+      throw new ConflictError("Una de las asistencias seleccionadas ya esta incluida en un pago al trabajador")
+    }
+    throw error
+  }
+
+  return paymentId
+}
+
+export async function deleteWorkerPayment(jobId: string, paymentId: string) {
+  await transaction(async (connection) => {
+    await assertJobExists(connection, jobId, true)
+    const [payments] = await connection.execute<RowDataPacket[]>(
+      "SELECT id FROM worker_payments WHERE id = ? AND job_id = ? FOR UPDATE",
+      [paymentId, jobId]
+    )
+    if (payments.length === 0) throw new ResourceNotFoundError("Pago al trabajador no encontrado para este trabajo")
+
+    // Se eliminan primero los detalles. El FK CASCADE cubre igualmente esta relacion
+    // si el pago se eliminara por otra operacion explicita autorizada.
+    await connection.execute("DELETE FROM worker_payment_days WHERE worker_payment_id = ?", [paymentId])
+    await connection.execute("DELETE FROM worker_payments WHERE id = ?", [paymentId])
+  })
+}
