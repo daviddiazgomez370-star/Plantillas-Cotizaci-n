@@ -313,6 +313,39 @@ export const workerPaymentSchema = z
     }
   })
 
+const profitSharePercentage = z.coerce
+  .number()
+  .finite()
+  .positive("El porcentaje debe ser mayor que cero")
+  .max(100, "El porcentaje no puede superar 100")
+  .refine((value) => Math.abs(value * 100 - Math.round(value * 100)) < 0.000_001, "El porcentaje admite maximo dos decimales")
+
+export const jobProfitSharesSchema = z
+  .object({
+    participants: z.array(z.object({
+      worker_id: idSchema,
+      percentage: profitSharePercentage,
+    })).min(1, "Configura al menos un participante de reparto"),
+  })
+  .superRefine((value, context) => {
+    const workerIds = value.participants.map((participant) => participant.worker_id)
+    if (new Set(workerIds).size !== workerIds.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["participants"],
+        message: "No repitas trabajadores en el reparto",
+      })
+    }
+    const totalMinor = value.participants.reduce((total, participant) => total + Math.round(participant.percentage * 100), 0)
+    if (totalMinor !== 10_000) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["participants"],
+        message: "Los porcentajes de reparto deben sumar exactamente 100.00%",
+      })
+    }
+  })
+
 export function invalidRequest(error: ZodError) {
   const firstMessage = error.issues[0]?.message
 
