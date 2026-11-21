@@ -809,6 +809,7 @@ export async function getJobById(id: string) {
 export async function updateJob(id: string, job: JobInput) {
   await transaction(async (connection) => {
     await assertJobExists(connection, id, true)
+    await assertFinancialCloseOpen(connection, id)
     await assertOptionalReference(connection, "clients", job.client_id, "Cliente")
     await assertOptionalReference(connection, "quotations", job.quotation_id, "Cotizacion")
 
@@ -842,6 +843,7 @@ const allowedJobTransitions: Record<JobStatus, JobStatus[]> = {
 export async function updateJobStatus(id: string, nextStatus: JobStatus) {
   await transaction(async (connection) => {
     const job = await assertJobExists(connection, id, true)
+    await assertFinancialCloseOpen(connection, id)
     if (job.status === nextStatus || !allowedJobTransitions[job.status].includes(nextStatus)) {
       throw new ConflictError("La transicion de estado solicitada no es valida")
     }
@@ -1235,6 +1237,7 @@ export async function saveJobExpense(jobId: string, expense: JobExpenseInput) {
   const id = generateUUID()
   await transaction(async (connection) => {
     const job = await assertJobExists(connection, jobId, true)
+    await assertFinancialCloseOpen(connection, jobId)
     assertExpensesEditable(job.status)
     await connection.execute(
       `INSERT INTO job_expenses (id, job_id, expense_date, category, description, amount, note)
@@ -1248,6 +1251,7 @@ export async function saveJobExpense(jobId: string, expense: JobExpenseInput) {
 export async function updateJobExpense(jobId: string, expenseId: string, expense: JobExpenseInput) {
   await transaction(async (connection) => {
     const job = await assertJobExists(connection, jobId, true)
+    await assertFinancialCloseOpen(connection, jobId)
     assertExpensesEditable(job.status)
     const [existing] = await connection.execute<ExpenseIdRow[]>(
       "SELECT id FROM job_expenses WHERE id = ? AND job_id = ? FOR UPDATE",
@@ -1267,6 +1271,7 @@ export async function updateJobExpense(jobId: string, expenseId: string, expense
 export async function deleteJobExpense(jobId: string, expenseId: string) {
   await transaction(async (connection) => {
     const job = await assertJobExists(connection, jobId, true)
+    await assertFinancialCloseOpen(connection, jobId)
     assertExpensesEditable(job.status)
     const [existing] = await connection.execute<ExpenseIdRow[]>(
       "SELECT id FROM job_expenses WHERE id = ? AND job_id = ? FOR UPDATE",
@@ -1310,9 +1315,9 @@ export async function getJobPayments(jobId: string) {
   const payments = rows.map(normalizePayment); const received = payments.reduce((sum, p) => sum + toMinorUnits(p.amount), 0); const agreed = toMinorUnits(job.agreed_value); const advance = job.advance_percentage ?? 50
   return { job, payments, summary: { advance_percentage: advance, advance_expected: job.agreed_value * advance / 100, total_received: fromMinorUnits(received), balance_due: fromMinorUnits(agreed - received), financial_status: received === 0 ? "no_payments" : received === agreed ? "paid" : "partial" } }
 }
-export async function saveJobPayment(jobId: string, payment: JobClientPaymentInput) { const id = generateUUID(); await transaction(async c => { await ensurePaymentFits(c, jobId, payment.amount); await c.execute("INSERT INTO job_client_payments (id,job_id,payment_date,payment_type,amount,note) VALUES (?,?,?,?,?,?)", [id,jobId,payment.payment_date,payment.payment_type,payment.amount,payment.note||null]) }); return id }
-export async function updateJobPayment(jobId: string, id: string, payment: JobClientPaymentInput) { await transaction(async c => { const agreedValue=await lockJobForPayment(c,jobId); const [found]=await c.execute<RowDataPacket[]>("SELECT id FROM job_client_payments WHERE id=? AND job_id=? FOR UPDATE",[id,jobId]); if(!found.length) throw new ResourceNotFoundError("Cobro no encontrado para este trabajo"); await ensurePaymentFits(c,jobId,payment.amount,id,agreedValue); await c.execute("UPDATE job_client_payments SET payment_date=?,payment_type=?,amount=?,note=?,updated_at=NOW() WHERE id=?",[payment.payment_date,payment.payment_type,payment.amount,payment.note||null,id]) }) }
-export async function deleteJobPayment(jobId: string, id: string) { await transaction(async c => { await assertJobExists(c,jobId,true); const [found]=await c.execute<RowDataPacket[]>("SELECT id FROM job_client_payments WHERE id=? AND job_id=? FOR UPDATE",[id,jobId]); if(!found.length) throw new ResourceNotFoundError("Cobro no encontrado para este trabajo"); await c.execute("DELETE FROM job_client_payments WHERE id=?",[id]) }) }
+export async function saveJobPayment(jobId: string, payment: JobClientPaymentInput) { const id = generateUUID(); await transaction(async c => { const agreedValue = await lockJobForPayment(c, jobId); await assertFinancialCloseOpen(c, jobId); await ensurePaymentFits(c, jobId, payment.amount, undefined, agreedValue); await c.execute("INSERT INTO job_client_payments (id,job_id,payment_date,payment_type,amount,note) VALUES (?,?,?,?,?,?)", [id,jobId,payment.payment_date,payment.payment_type,payment.amount,payment.note||null]) }); return id }
+export async function updateJobPayment(jobId: string, id: string, payment: JobClientPaymentInput) { await transaction(async c => { const agreedValue=await lockJobForPayment(c,jobId); await assertFinancialCloseOpen(c,jobId); const [found]=await c.execute<RowDataPacket[]>("SELECT id FROM job_client_payments WHERE id=? AND job_id=? FOR UPDATE",[id,jobId]); if(!found.length) throw new ResourceNotFoundError("Cobro no encontrado para este trabajo"); await ensurePaymentFits(c,jobId,payment.amount,id,agreedValue); await c.execute("UPDATE job_client_payments SET payment_date=?,payment_type=?,amount=?,note=?,updated_at=NOW() WHERE id=?",[payment.payment_date,payment.payment_type,payment.amount,payment.note||null,id]) }) }
+export async function deleteJobPayment(jobId: string, id: string) { await transaction(async c => { await assertJobExists(c,jobId,true); await assertFinancialCloseOpen(c,jobId); const [found]=await c.execute<RowDataPacket[]>("SELECT id FROM job_client_payments WHERE id=? AND job_id=? FOR UPDATE",[id,jobId]); if(!found.length) throw new ResourceNotFoundError("Cobro no encontrado para este trabajo"); await c.execute("DELETE FROM job_client_payments WHERE id=?",[id]) }) }
 export async function updateJobAdvancePercentage(jobId: string, percentage: number) { await transaction(async c => { const job=await assertJobExists(c,jobId,true); await c.execute("UPDATE jobs SET advance_percentage=?, updated_at=NOW() WHERE id=?",[percentage,job.id]) }); return getJobPayments(jobId) }
 
 // ---- Pagos por dias trabajados a trabajadores (Fase 5) ----
@@ -1455,6 +1460,7 @@ export async function saveWorkerPayment(jobId: string, payment: WorkerPaymentInp
     await transaction(async (connection) => {
       // Serializa pagos del trabajo y coordina tambien con las correcciones de asistencia.
       await assertJobExists(connection, jobId, true)
+      await assertFinancialCloseOpen(connection, jobId)
 
       const [workers] = await connection.execute<PaymentWorkerRow[]>(
         "SELECT id, compensation_type, daily_rate FROM workers WHERE id = ? FOR UPDATE",
@@ -1536,6 +1542,7 @@ export async function saveWorkerPayment(jobId: string, payment: WorkerPaymentInp
 export async function deleteWorkerPayment(jobId: string, paymentId: string) {
   await transaction(async (connection) => {
     await assertJobExists(connection, jobId, true)
+    await assertFinancialCloseOpen(connection, jobId)
     const [payments] = await connection.execute<RowDataPacket[]>(
       "SELECT id FROM worker_payments WHERE id = ? AND job_id = ? FOR UPDATE",
       [paymentId, jobId]
@@ -1547,4 +1554,403 @@ export async function deleteWorkerPayment(jobId: string, paymentId: string) {
     await connection.execute("DELETE FROM worker_payment_days WHERE worker_payment_id = ?", [paymentId])
     await connection.execute("DELETE FROM worker_payments WHERE id = ?", [paymentId])
   })
+}
+
+// ---- Cierre financiero y reparto de utilidad (Fase 6A) ----
+
+export interface JobProfitShare {
+  id: string
+  job_id: string
+  worker_id: string
+  worker_name: string
+  worker_job_title: string
+  percentage: number
+}
+
+export interface JobProfitShareInput {
+  participants: Array<{ worker_id: string; percentage: number }>
+}
+
+export interface FinancialCloseShare {
+  id: string
+  worker_id: string
+  worker_name_snapshot: string
+  worker_job_title_snapshot: string
+  percentage_snapshot: number
+  amount_snapshot: number
+}
+
+export interface JobFinancialClose {
+  id: string
+  job_id: string
+  agreed_value_snapshot: number
+  client_collected_snapshot: number
+  expenses_snapshot: number
+  worker_payments_snapshot: number
+  result_snapshot: number
+  closed_at: string
+  shares: FinancialCloseShare[]
+}
+
+type FinancialTotalsMinor = {
+  agreed: number
+  collected: number
+  expenses: number
+  workerPayments: number
+  result: number
+}
+
+type ProfitShareRow = RowDataPacket & {
+  id: string
+  job_id: string
+  worker_id: string
+  worker_name: string
+  worker_job_title: string
+  compensation_type: WorkerCompensationType
+  percentage: number | string
+  assigned_worker_id: string | null
+}
+
+type FinancialCloseRow = RowDataPacket & {
+  id: string
+  job_id: string
+  agreed_value_snapshot: number | string
+  client_collected_snapshot: number | string
+  expenses_snapshot: number | string
+  worker_payments_snapshot: number | string
+  result_snapshot: number | string
+  closed_at: string
+}
+
+type FinancialCloseShareRow = RowDataPacket & {
+  id: string
+  financial_close_id: string
+  worker_id: string
+  worker_name_snapshot: string
+  worker_job_title_snapshot: string
+  percentage_snapshot: number | string
+  amount_snapshot: number | string
+}
+
+type TotalRow = RowDataPacket & { total: number | string }
+
+function percentageToMinor(percentage: number | string) {
+  return Math.round(Number(percentage) * 100)
+}
+
+function normalizeProfitShare(row: ProfitShareRow): JobProfitShare {
+  return {
+    id: row.id,
+    job_id: row.job_id,
+    worker_id: row.worker_id,
+    worker_name: row.worker_name,
+    worker_job_title: row.worker_job_title,
+    percentage: Number(row.percentage),
+  }
+}
+
+function normalizeFinancialCloseShare(row: FinancialCloseShareRow): FinancialCloseShare {
+  return {
+    id: row.id,
+    worker_id: row.worker_id,
+    worker_name_snapshot: row.worker_name_snapshot,
+    worker_job_title_snapshot: row.worker_job_title_snapshot,
+    percentage_snapshot: Number(row.percentage_snapshot),
+    amount_snapshot: Number(row.amount_snapshot),
+  }
+}
+
+async function assertFinancialCloseOpen(connection: PoolConnection, jobId: string) {
+  const [closes] = await connection.execute<RowDataPacket[]>(
+    "SELECT id FROM job_financial_closes WHERE job_id = ? FOR UPDATE",
+    [jobId]
+  )
+  if (closes.length > 0) {
+    throw new ConflictError("No se puede modificar la información financiera porque el trabajo ya tiene un cierre financiero")
+  }
+}
+
+async function getFinancialTotalsInTransaction(connection: PoolConnection, jobId: string, agreedValue: number | string): Promise<FinancialTotalsMinor> {
+  const [[client], [expenses], [workerPayments]] = await Promise.all([
+    connection.execute<TotalRow[]>("SELECT COALESCE(SUM(amount), 0) AS total FROM job_client_payments WHERE job_id = ?", [jobId]),
+    connection.execute<TotalRow[]>("SELECT COALESCE(SUM(amount), 0) AS total FROM job_expenses WHERE job_id = ?", [jobId]),
+    connection.execute<TotalRow[]>("SELECT COALESCE(SUM(total_amount), 0) AS total FROM worker_payments WHERE job_id = ?", [jobId]),
+  ])
+  const agreed = toMinorUnits(Number(agreedValue))
+  const collected = toMinorUnits(Number(client[0]?.total || 0))
+  const totalExpenses = toMinorUnits(Number(expenses[0]?.total || 0))
+  const totalWorkerPayments = toMinorUnits(Number(workerPayments[0]?.total || 0))
+  return { agreed, collected, expenses: totalExpenses, workerPayments: totalWorkerPayments, result: agreed - totalExpenses - totalWorkerPayments }
+}
+
+async function getFinancialTotals(jobId: string, agreedValue: number): Promise<FinancialTotalsMinor> {
+  const [client, expenses, workerPayments] = await Promise.all([
+    query<TotalRow[]>("SELECT COALESCE(SUM(amount), 0) AS total FROM job_client_payments WHERE job_id = ?", [jobId]),
+    query<TotalRow[]>("SELECT COALESCE(SUM(amount), 0) AS total FROM job_expenses WHERE job_id = ?", [jobId]),
+    query<TotalRow[]>("SELECT COALESCE(SUM(total_amount), 0) AS total FROM worker_payments WHERE job_id = ?", [jobId]),
+  ])
+  const agreed = toMinorUnits(agreedValue)
+  const collected = toMinorUnits(Number(client[0]?.total || 0))
+  const totalExpenses = toMinorUnits(Number(expenses[0]?.total || 0))
+  const totalWorkerPayments = toMinorUnits(Number(workerPayments[0]?.total || 0))
+  return { agreed, collected, expenses: totalExpenses, workerPayments: totalWorkerPayments, result: agreed - totalExpenses - totalWorkerPayments }
+}
+
+async function countPendingDailyRateAttendance(connection: PoolConnection, jobId: string) {
+  const [rows] = await connection.execute<TotalRow[]>(`
+    SELECT COUNT(*) AS total
+    FROM work_attendance wa
+    INNER JOIN workers w ON w.id = wa.worker_id
+    LEFT JOIN worker_payment_days wpd ON wpd.attendance_id = wa.id
+    WHERE wa.job_id = ?
+      AND wa.status = 'worked'
+      AND w.compensation_type = 'daily_rate'
+      AND wpd.id IS NULL
+  `, [jobId])
+  return Number(rows[0]?.total || 0)
+}
+
+async function getPendingDailyRateAttendance(jobId: string) {
+  const rows = await query<TotalRow[]>(`
+    SELECT COUNT(*) AS total
+    FROM work_attendance wa
+    INNER JOIN workers w ON w.id = wa.worker_id
+    LEFT JOIN worker_payment_days wpd ON wpd.attendance_id = wa.id
+    WHERE wa.job_id = ?
+      AND wa.status = 'worked'
+      AND w.compensation_type = 'daily_rate'
+      AND wpd.id IS NULL
+  `, [jobId])
+  return Number(rows[0]?.total || 0)
+}
+
+async function getJobProfitSharesRows(jobId: string) {
+  return query<ProfitShareRow[]>(`
+    SELECT jps.id, jps.job_id, jps.worker_id, w.name AS worker_name, w.job_title AS worker_job_title,
+      w.compensation_type, jps.percentage, jw.worker_id AS assigned_worker_id
+    FROM job_profit_shares jps
+    INNER JOIN workers w ON w.id = jps.worker_id
+    LEFT JOIN job_workers jw ON jw.job_id = jps.job_id AND jw.worker_id = jps.worker_id
+    WHERE jps.job_id = ?
+    ORDER BY w.name ASC, jps.id ASC
+  `, [jobId])
+}
+
+async function getJobProfitSharesRowsForUpdate(connection: PoolConnection, jobId: string) {
+  const [rows] = await connection.execute<ProfitShareRow[]>(`
+    SELECT jps.id, jps.job_id, jps.worker_id, w.name AS worker_name, w.job_title AS worker_job_title,
+      w.compensation_type, jps.percentage, jw.worker_id AS assigned_worker_id
+    FROM job_profit_shares jps
+    INNER JOIN workers w ON w.id = jps.worker_id
+    LEFT JOIN job_workers jw ON jw.job_id = jps.job_id AND jw.worker_id = jps.worker_id
+    WHERE jps.job_id = ?
+    ORDER BY jps.worker_id ASC
+    FOR UPDATE
+  `, [jobId])
+  return rows
+}
+
+function sharesAreValid(shares: ProfitShareRow[]) {
+  return shares.length > 0
+    && shares.every((share) => share.compensation_type === "profit_share" && Boolean(share.assigned_worker_id) && percentageToMinor(share.percentage) > 0)
+    && shares.reduce((total, share) => total + percentageToMinor(share.percentage), 0) === 10_000
+}
+
+function assertValidProfitShares(shares: ProfitShareRow[]) {
+  if (shares.length === 0) throw new ConflictError("Configura al menos un participante de reparto antes del cierre")
+  if (shares.some((share) => share.compensation_type !== "profit_share")) {
+    throw new ConflictError("Solo los trabajadores con reparto de utilidad pueden participar")
+  }
+  if (shares.some((share) => !share.assigned_worker_id)) {
+    throw new ConflictError("Todos los participantes deben estar asignados al trabajo")
+  }
+  if (shares.some((share) => percentageToMinor(share.percentage) <= 0)) {
+    throw new ConflictError("Cada porcentaje de reparto debe ser mayor que cero")
+  }
+  if (shares.reduce((total, share) => total + percentageToMinor(share.percentage), 0) !== 10_000) {
+    throw new ConflictError("Los porcentajes de reparto deben sumar exactamente 100.00%")
+  }
+}
+
+function allocateProfit(resultMinor: number, shares: ProfitShareRow[]) {
+  const distributable = Math.max(0, resultMinor)
+  if (distributable === 0) return shares.map((share) => ({ share, amountMinor: 0 }))
+
+  const denominator = BigInt(10_000)
+  const distributableBigInt = BigInt(distributable)
+  const allocations = shares.map((share) => {
+    const numerator = distributableBigInt * BigInt(percentageToMinor(share.percentage))
+    return { share, amountMinor: Number(numerator / denominator), remainder: numerator % denominator }
+  })
+  let remaining = distributable - allocations.reduce((total, allocation) => total + allocation.amountMinor, 0)
+  const recipients = [...allocations].sort((left, right) => {
+    if (left.remainder === right.remainder) return left.share.worker_id.localeCompare(right.share.worker_id)
+    return left.remainder > right.remainder ? -1 : 1
+  })
+  for (let index = 0; index < remaining; index += 1) recipients[index].amountMinor += 1
+  return allocations.map(({ share, amountMinor }) => ({ share, amountMinor }))
+}
+
+async function getFinancialCloseSnapshot(jobId: string) {
+  const closeRows = await query<FinancialCloseRow[]>(`
+    SELECT id, job_id, agreed_value_snapshot, client_collected_snapshot, expenses_snapshot,
+      worker_payments_snapshot, result_snapshot, DATE_FORMAT(closed_at, '%Y-%m-%d %H:%i:%s') AS closed_at
+    FROM job_financial_closes
+    WHERE job_id = ?
+  `, [jobId])
+  if (closeRows.length === 0) return null
+  const close = closeRows[0]
+  const shares = await query<FinancialCloseShareRow[]>(`
+    SELECT id, financial_close_id, worker_id, worker_name_snapshot, worker_job_title_snapshot,
+      percentage_snapshot, amount_snapshot
+    FROM job_financial_close_shares
+    WHERE financial_close_id = ?
+    ORDER BY worker_name_snapshot ASC, id ASC
+  `, [close.id])
+  return {
+    id: close.id,
+    job_id: close.job_id,
+    agreed_value_snapshot: Number(close.agreed_value_snapshot),
+    client_collected_snapshot: Number(close.client_collected_snapshot),
+    expenses_snapshot: Number(close.expenses_snapshot),
+    worker_payments_snapshot: Number(close.worker_payments_snapshot),
+    result_snapshot: Number(close.result_snapshot),
+    closed_at: close.closed_at,
+    shares: shares.map(normalizeFinancialCloseShare),
+  } as JobFinancialClose
+}
+
+export async function getJobFinancialClose(jobId: string) {
+  const job = await getJobById(jobId)
+  const [totals, pendingDailyRateDays, shareRows, financialClose] = await Promise.all([
+    getFinancialTotals(jobId, job.agreed_value),
+    getPendingDailyRateAttendance(jobId),
+    getJobProfitSharesRows(jobId),
+    getFinancialCloseSnapshot(jobId),
+  ])
+  const validShares = sharesAreValid(shareRows)
+  const projectedShares = validShares
+    ? allocateProfit(totals.result, shareRows).map(({ share, amountMinor }) => ({
+      worker_id: share.worker_id,
+      worker_name: share.worker_name,
+      worker_job_title: share.worker_job_title,
+      percentage: Number(share.percentage),
+      amount: fromMinorUnits(amountMinor),
+    }))
+    : []
+  const clientBalance = totals.agreed - totals.collected
+  const requirements = {
+    work_completed: job.status === "completed",
+    client_paid_in_full: totals.collected === totals.agreed && clientBalance === 0,
+    no_pending_daily_rate_days: pendingDailyRateDays === 0,
+    valid_profit_shares: validShares,
+    not_closed: financialClose === null,
+  }
+  return {
+    job,
+    summary: {
+      agreed_value: fromMinorUnits(totals.agreed),
+      client_collected: fromMinorUnits(totals.collected),
+      client_balance: fromMinorUnits(clientBalance),
+      expenses: fromMinorUnits(totals.expenses),
+      worker_payments: fromMinorUnits(totals.workerPayments),
+      projected_result: fromMinorUnits(totals.result),
+      distributable_profit: fromMinorUnits(Math.max(0, totals.result)),
+      has_positive_profit: totals.result > 0,
+    },
+    profit_shares: shareRows.map(normalizeProfitShare),
+    profit_share_total_percentage: shareRows.reduce((total, share) => total + percentageToMinor(share.percentage), 0) / 100,
+    projected_shares: projectedShares,
+    pending_daily_rate_days: pendingDailyRateDays,
+    requirements,
+    can_close: Object.values(requirements).every(Boolean),
+    financial_close: financialClose,
+  }
+}
+
+export async function replaceJobProfitShares(jobId: string, input: JobProfitShareInput) {
+  await transaction(async (connection) => {
+    await assertJobExists(connection, jobId, true)
+    await assertFinancialCloseOpen(connection, jobId)
+    const percentageTotal = input.participants.reduce((total, participant) => total + percentageToMinor(participant.percentage), 0)
+    if (percentageTotal !== 10_000) throw new ConflictError("Los porcentajes de reparto deben sumar exactamente 100.00%")
+
+    const workerIds = input.participants.map((participant) => participant.worker_id)
+    const placeholders = workerIds.map(() => "?").join(", ")
+    const [workers] = await connection.execute<RowDataPacket[]>(`
+      SELECT w.id, w.compensation_type, jw.worker_id AS assigned_worker_id
+      FROM workers w
+      LEFT JOIN job_workers jw ON jw.job_id = ? AND jw.worker_id = w.id
+      WHERE w.id IN (${placeholders})
+      FOR UPDATE
+    `, [jobId, ...workerIds])
+    if (workers.length !== workerIds.length) throw new ResourceNotFoundError("Uno de los trabajadores seleccionados no existe")
+    if (workers.some((worker) => worker.compensation_type !== "profit_share")) {
+      throw new ConflictError("Solo los trabajadores con reparto de utilidad pueden participar")
+    }
+    if (workers.some((worker) => !worker.assigned_worker_id)) {
+      throw new ConflictError("Todos los participantes deben estar asignados al trabajo")
+    }
+
+    await connection.execute("DELETE FROM job_profit_shares WHERE job_id = ?", [jobId])
+    for (const participant of input.participants) {
+      await connection.execute(
+        "INSERT INTO job_profit_shares (id, job_id, worker_id, percentage) VALUES (?, ?, ?, ?)",
+        [generateUUID(), jobId, participant.worker_id, participant.percentage]
+      )
+    }
+  })
+  return getJobFinancialClose(jobId)
+}
+
+export async function closeJobFinancially(jobId: string) {
+  const closeId = generateUUID()
+  try {
+    await transaction(async (connection) => {
+      const job = await assertJobExists(connection, jobId, true)
+      if (job.status !== "completed") throw new ConflictError("El trabajo debe estar Finalizado para realizar el cierre financiero")
+      await assertFinancialCloseOpen(connection, jobId)
+      const [jobRows] = await connection.execute<RowDataPacket[]>("SELECT agreed_value FROM jobs WHERE id = ?", [jobId])
+      const totals = await getFinancialTotalsInTransaction(connection, jobId, jobRows[0].agreed_value)
+      if (totals.collected !== totals.agreed) {
+        throw new ConflictError("El cliente debe haber pagado el 100% del valor acordado antes del cierre")
+      }
+      if (await countPendingDailyRateAttendance(connection, jobId) > 0) {
+        throw new ConflictError("No se puede cerrar mientras existan días trabajados pendientes de pago")
+      }
+      const shares = await getJobProfitSharesRowsForUpdate(connection, jobId)
+      assertValidProfitShares(shares)
+      const allocations = allocateProfit(totals.result, shares)
+
+      await connection.execute(`
+        INSERT INTO job_financial_closes (
+          id, job_id, agreed_value_snapshot, client_collected_snapshot, expenses_snapshot,
+          worker_payments_snapshot, result_snapshot
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [
+        closeId,
+        jobId,
+        fromMinorUnits(totals.agreed),
+        fromMinorUnits(totals.collected),
+        fromMinorUnits(totals.expenses),
+        fromMinorUnits(totals.workerPayments),
+        fromMinorUnits(totals.result),
+      ])
+      for (const { share, amountMinor } of allocations) {
+        await connection.execute(`
+          INSERT INTO job_financial_close_shares (
+            id, financial_close_id, worker_id, worker_name_snapshot, worker_job_title_snapshot,
+            percentage_snapshot, amount_snapshot
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, [
+          generateUUID(), closeId, share.worker_id, share.worker_name, share.worker_job_title,
+          share.percentage, fromMinorUnits(amountMinor),
+        ])
+      }
+    })
+  } catch (error) {
+    if (isDuplicateKeyError(error)) throw new ConflictError("El trabajo ya tiene un cierre financiero")
+    throw error
+  }
+  return getJobFinancialClose(jobId)
 }
