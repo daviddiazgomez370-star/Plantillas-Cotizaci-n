@@ -29,6 +29,8 @@ export interface Quotation {
   work_end_date?: string
   pdf_url?: string
   updated_at: string
+  job_id?: string
+  has_job: boolean
 }
 
 export interface Invoice {
@@ -60,7 +62,7 @@ export interface Invoice {
   updated_at: string
 }
 
-export async function saveQuotation(quotation: Omit<Quotation, "id" | "created_at" | "updated_at">) {
+export async function saveQuotation(quotation: Omit<Quotation, "id" | "created_at" | "updated_at" | "job_id" | "has_job">) {
   const id = generateUUID()
   const productsJson = JSON.stringify(quotation.products)
 
@@ -102,17 +104,29 @@ export async function saveQuotation(quotation: Omit<Quotation, "id" | "created_a
 }
 
 export async function getQuotations() {
-  const sql = "SELECT * FROM quotations ORDER BY created_at DESC"
+  const sql = `
+    SELECT q.*, j.id AS job_id, CASE WHEN j.id IS NULL THEN 0 ELSE 1 END AS has_job
+    FROM quotations q
+    LEFT JOIN jobs j ON j.quotation_id = q.id
+    ORDER BY q.created_at DESC
+  `
   const results = await query<any[]>(sql)
 
   return results.map((row) => ({
     ...row,
     products: typeof row.products === "string" ? JSON.parse(row.products) : row.products,
+    job_id: row.job_id || undefined,
+    has_job: Boolean(row.has_job),
   })) as Quotation[]
 }
 
 export async function getQuotationById(id: string) {
-  const sql = "SELECT * FROM quotations WHERE id = ?"
+  const sql = `
+    SELECT q.*, j.id AS job_id, CASE WHEN j.id IS NULL THEN 0 ELSE 1 END AS has_job
+    FROM quotations q
+    LEFT JOIN jobs j ON j.quotation_id = q.id
+    WHERE q.id = ?
+  `
   const results = await query<any[]>(sql, [id])
 
   if (results.length === 0) {
@@ -123,6 +137,8 @@ export async function getQuotationById(id: string) {
   return {
     ...row,
     products: typeof row.products === "string" ? JSON.parse(row.products) : row.products,
+    job_id: row.job_id || undefined,
+    has_job: Boolean(row.has_job),
   } as Quotation
 }
 
@@ -309,8 +325,15 @@ export async function getInvoiceById(id: string) {
 }
 
 export async function deleteQuotation(id: string) {
-  const sql = "DELETE FROM quotations WHERE id = ?"
-  await query(sql, [id])
+  try {
+    const sql = "DELETE FROM quotations WHERE id = ?"
+    await query(sql, [id])
+  } catch (error: any) {
+    if (error?.code === "ER_ROW_IS_REFERENCED_2" || error?.errno === 1451) {
+      throw new ConflictError("No puedes eliminar una cotizacion que ya genero un trabajo")
+    }
+    throw error
+  }
 }
 
 export async function deleteInvoice(id: string) {
@@ -603,11 +626,21 @@ export interface JobInput {
   name: string
   description?: string
   client_id?: string
-  quotation_id?: string
   agreed_value: number
   start_date?: string
   end_date?: string
   notes?: string
+}
+
+export interface QuotationJobInput {
+  name: string
+  description?: string
+  client_id: string
+  start_date?: string
+  end_date?: string
+  notes?: string
+  advance_percentage: number
+  worker_ids?: string[]
 }
 
 function toDateInputValue(value: unknown) {
@@ -731,19 +764,17 @@ export async function saveJob(job: JobInput, workerIds: string[] = []) {
 
   await transaction(async (connection) => {
     await assertOptionalReference(connection, "clients", job.client_id, "Cliente")
-    await assertOptionalReference(connection, "quotations", job.quotation_id, "Cotizacion")
     await getWorkersForAssignment(connection, workerIds)
 
     await connection.execute(
       `INSERT INTO jobs (
-        id, name, description, client_id, quotation_id, agreed_value, start_date, end_date, status, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?)`,
+        id, name, description, client_id, agreed_value, start_date, end_date, status, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'accepted', ?)`,
       [
         id,
         job.name,
         job.description || null,
         job.client_id || null,
-        job.quotation_id || null,
         job.agreed_value,
         job.start_date || null,
         job.end_date || null,
@@ -811,18 +842,16 @@ export async function updateJob(id: string, job: JobInput) {
     await assertJobExists(connection, id, true)
     await assertFinancialCloseOpen(connection, id)
     await assertOptionalReference(connection, "clients", job.client_id, "Cliente")
-    await assertOptionalReference(connection, "quotations", job.quotation_id, "Cotizacion")
 
     await connection.execute(
       `UPDATE jobs SET
-        name = ?, description = ?, client_id = ?, quotation_id = ?, agreed_value = ?,
+        name = ?, description = ?, client_id = ?, agreed_value = ?,
         start_date = ?, end_date = ?, notes = ?, updated_at = NOW()
       WHERE id = ?`,
       [
         job.name,
         job.description || null,
         job.client_id || null,
-        job.quotation_id || null,
         job.agreed_value,
         job.start_date || null,
         job.end_date || null,
@@ -831,6 +860,75 @@ export async function updateJob(id: string, job: JobInput) {
       ]
     )
   })
+  return getJobById(id)
+}
+
+export async function createJobFromQuotation(quotationId: string, job: QuotationJobInput) {
+  const id = generateUUID()
+  const workerIds = job.worker_ids || []
+
+  try {
+    await transaction(async (connection) => {
+      const [quotations] = await connection.execute<RowDataPacket[]>(
+        "SELECT id, status, total FROM quotations WHERE id = ? FOR UPDATE",
+        [quotationId]
+      )
+      const quotation = quotations[0]
+      if (!quotation) throw new ResourceNotFoundError("Cotizacion no encontrada")
+      if (quotation.status !== "approved") {
+        throw new ConflictError("Solo una cotizacion aprobada puede crear un trabajo")
+      }
+
+      const [linkedJobs] = await connection.execute<RowDataPacket[]>(
+        "SELECT id FROM jobs WHERE quotation_id = ? FOR UPDATE",
+        [quotationId]
+      )
+      if (linkedJobs.length > 0) {
+        throw new ConflictError("Esta cotizacion ya genero un trabajo")
+      }
+
+      const [clients] = await connection.execute<RowDataPacket[]>(
+        "SELECT id FROM clients WHERE id = ? FOR UPDATE",
+        [job.client_id]
+      )
+      if (clients.length === 0) throw new ResourceNotFoundError("Cliente no encontrado")
+
+      await getWorkersForAssignment(connection, workerIds)
+
+      await connection.execute(
+        `INSERT INTO jobs (
+          id, name, description, client_id, quotation_id, agreed_value, start_date, end_date,
+          status, notes, advance_percentage
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?)`,
+        [
+          id,
+          job.name,
+          job.description || null,
+          job.client_id,
+          quotationId,
+          quotation.total,
+          job.start_date || null,
+          job.end_date || null,
+          job.notes || null,
+          job.advance_percentage,
+        ]
+      )
+      await connection.execute(
+        "INSERT INTO job_status_history (job_id, previous_status, new_status) VALUES (?, NULL, 'accepted')",
+        [id]
+      )
+
+      for (const workerId of workerIds) {
+        await connection.execute("INSERT INTO job_workers (job_id, worker_id) VALUES (?, ?)", [id, workerId])
+      }
+    })
+  } catch (error: any) {
+    if (error?.code === "ER_DUP_ENTRY" || error?.errno === 1062) {
+      throw new ConflictError("Esta cotizacion ya genero un trabajo")
+    }
+    throw error
+  }
+
   return getJobById(id)
 }
 

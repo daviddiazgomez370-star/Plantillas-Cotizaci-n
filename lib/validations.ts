@@ -24,6 +24,9 @@ const requiredText = (label: string, maxLength = 255) =>
 const money = z.coerce.number().finite().min(0, "El valor no puede ser negativo")
 const uuid = z.string().uuid("El identificador no es válido")
 
+const advancePercentage = z.coerce.number().finite().min(0).max(100)
+  .refine((value) => Number.isInteger(value * 100), "El porcentaje admite maximo dos decimales")
+
 export const idSchema = z.string().uuid("El identificador no es valido")
 
 const optionalMoney = z.preprocess(
@@ -178,26 +181,32 @@ export const workerActivationSchema = z.object({
   is_active: z.boolean(),
 })
 
-export const jobSchema = z
-  .object({
-    name: requiredText("El nombre del trabajo"),
-    description: optionalText(5_000),
-    client_id: idSchema.nullable().optional().transform((value) => value || undefined),
-    quotation_id: idSchema.nullable().optional().transform((value) => value || undefined),
-    agreed_value: money,
-    start_date: optionalDate,
-    end_date: optionalDate,
-    notes: optionalText(5_000),
-  })
-  .superRefine((job, context) => {
-    if (job.start_date && job.end_date && job.end_date < job.start_date) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["end_date"],
-        message: "La fecha de finalizacion no puede ser anterior a la fecha inicial",
-      })
-    }
-  })
+const jobFields = {
+  name: requiredText("El nombre del trabajo"),
+  description: optionalText(5_000),
+  client_id: idSchema.nullable().optional().transform((value) => value || undefined),
+  agreed_value: money,
+  start_date: optionalDate,
+  end_date: optionalDate,
+  notes: optionalText(5_000),
+}
+
+const { agreed_value: _agreedValue, ...quotationJobFields } = jobFields
+
+function validateJobDates(
+  job: { start_date?: string; end_date?: string },
+  context: z.RefinementCtx
+) {
+  if (job.start_date && job.end_date && job.end_date < job.start_date) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["end_date"],
+      message: "La fecha de finalizacion no puede ser anterior a la fecha inicial",
+    })
+  }
+}
+
+export const jobSchema = z.object(jobFields).strict().superRefine(validateJobDates)
 
 export const workerIdsSchema = z
   .array(idSchema)
@@ -211,9 +220,20 @@ export const workerIdsSchema = z
     }
   })
 
-export const jobCreateSchema = jobSchema.and(z.object({
-  worker_ids: workerIdsSchema.optional(),
-}))
+export const jobCreateSchema = z
+  .object({ ...jobFields, worker_ids: workerIdsSchema.optional() })
+  .strict()
+  .superRefine(validateJobDates)
+
+export const quotationJobCreateSchema = z
+  .object({
+    ...quotationJobFields,
+    client_id: idSchema,
+    advance_percentage: advancePercentage,
+    worker_ids: workerIdsSchema.optional(),
+  })
+  .strict()
+  .superRefine(validateJobDates)
 
 export const jobStatusSchema = z.object({
   status: z.enum(jobStatuses),
@@ -292,8 +312,7 @@ export const jobClientPaymentSchema = z.object({
   note: optionalText(1_000),
 })
 export const advancePercentageSchema = z.object({
-  advance_percentage: z.coerce.number().finite().min(0).max(100)
-    .refine((value) => Number.isInteger(value * 100), "El porcentaje admite maximo dos decimales"),
+  advance_percentage: advancePercentage,
 })
 
 export const workerPaymentSchema = z

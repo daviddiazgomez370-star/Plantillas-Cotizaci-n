@@ -176,6 +176,7 @@ Todas las respuestas son JSON. Las solicitudes de creación y actualización val
 | `POST` | `/api/quotations` | Crea una cotización. |
 | `DELETE` | `/api/quotations/:id` | Elimina una cotización. |
 | `PATCH` | `/api/quotations/:id/status` | Cambia el estado: `pending`, `approved`, `converted` o `cancelled`. |
+| `POST` | `/api/quotations/:id/create-job` | Crea una vez un trabajo desde una cotizacion `approved`; toma el total de la base, exige `client_id` y no acepta valor ni vinculo manipulables. |
 | `GET` | `/api/free-documents` | Lista documentos libres. |
 | `POST` | `/api/free-documents` | Crea un documento libre. |
 | `GET` / `PUT` / `DELETE` | `/api/free-documents/:id` | Consulta, actualiza o elimina un documento libre. |
@@ -209,7 +210,7 @@ Los tipos internos de remuneracion son `daily_rate` y `profit_share`. Una tarifa
 
 Los estados internos son `accepted`, `in_progress` y `completed`, mostrados como **Aceptado**, **En proceso** y **Finalizado**. El flujo permitido es `accepted -> in_progress -> completed`; es un estado operativo, no financiero.
 
-`jobs.client_id` y `jobs.quotation_id` son claves foraneas opcionales con `ON DELETE SET NULL`. Un trabajo puede existir sin cliente registrado y la futura conversion Cotizacion -> Trabajo puede usar `quotation_id` sin cambiar el esquema.
+La migracion `011_quote_to_job.sql` convierte `jobs.quotation_id` en un vinculo unico opcional: los trabajos manuales pueden conservar `NULL`, pero una cotizacion solo puede originar un trabajo. La FK hacia cotizaciones usa borrado restrictivo para conservar el vinculo historico. Solo una cotizacion `approved` puede crear un trabajo mediante `POST /api/quotations/:id/create-job`; la transaccion bloquea la cotizacion, exige un `client_id` existente, copia `quotations.total` como snapshot inicial de `jobs.agreed_value` y crea el trabajo en estado `accepted`. La cotizacion permanece `approved`: `converted` sigue reservado para la conversion a cuenta de cobro. El indice unico y el bloqueo transaccional devuelven conflicto ante intentos concurrentes o duplicados.
 
 La migracion `006_work_attendance.sql` agrega asistencia sin incluir nomina, pagos, gastos ni reparto. Cada fila de `work_attendance` usa UUID, fecha `DATE`, estado `worked` o `not_worked`, nota opcional y marcas de tiempo. La restriccion `UNIQUE (job_id, worker_id, work_date)` evita que un trabajador tenga dos registros para el mismo trabajo y dia. Sus claves foraneas a `jobs` y `workers` usan `ON DELETE RESTRICT` para proteger el historial; los indices por trabajo/fecha y trabajador/fecha soportan las consultas del calendario y tabla.
 
