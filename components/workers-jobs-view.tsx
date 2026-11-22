@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AlertCircle, BriefcaseBusiness, Loader2, Pencil, Save, UserRoundCheck, Users, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -79,6 +79,9 @@ export function WorkersJobsView() {
   const [assignmentIds, setAssignmentIds] = useState<string[]>([])
   const [savingWorker, setSavingWorker] = useState(false)
   const [savingJob, setSavingJob] = useState(false)
+  const [activeTab, setActiveTab] = useState("workers")
+  const [requestedJobId, setRequestedJobId] = useState<string | null>(null)
+  const handledRequestedJobId = useRef<string | null>(null)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -108,6 +111,10 @@ export function WorkersJobsView() {
 
   useEffect(() => { fetchData() }, [fetchData])
 
+  useEffect(() => {
+    setRequestedJobId(new URLSearchParams(window.location.search).get("job"))
+  }, [])
+
   const activeWorkers = useMemo(() => workers.filter((worker) => worker.is_active), [workers])
   const assignedWorkerIds = useMemo(() => new Set(selectedJob?.workers?.map((worker) => worker.id) || []), [selectedJob])
   const availableWorkers = activeWorkers.filter((worker) => !assignedWorkerIds.has(worker.id))
@@ -116,7 +123,7 @@ export function WorkersJobsView() {
     update(ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id])
   }
 
-  const loadJob = async (id: string) => {
+  const loadJob = useCallback(async (id: string) => {
     try {
       const response = await fetch(`/api/jobs/${id}`)
       if (!response.ok) throw new Error(await errorMessage(response, "No se pudo consultar el trabajo"))
@@ -128,7 +135,15 @@ export function WorkersJobsView() {
       toast({ title: "No se pudo consultar el trabajo", description: error.message, variant: "destructive" })
       return null
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    if (!requestedJobId || loading || handledRequestedJobId.current === requestedJobId) return
+
+    handledRequestedJobId.current = requestedJobId
+    setActiveTab("jobs")
+    void loadJob(requestedJobId)
+  }, [loading, loadJob, requestedJobId])
 
   const saveWorker = async () => {
     if (!workerForm.name.trim() || !workerForm.job_title.trim()) {
@@ -251,7 +266,7 @@ export function WorkersJobsView() {
   }
 
   return (
-    <Tabs defaultValue="workers" className="space-y-6">
+    <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
       <TabsList className="h-auto flex-wrap"><TabsTrigger value="workers">Trabajadores</TabsTrigger><TabsTrigger value="jobs">Trabajos</TabsTrigger><TabsTrigger value="attendance">Días trabajados</TabsTrigger><TabsTrigger value="expenses">Gastos</TabsTrigger><TabsTrigger value="payments">Cobros</TabsTrigger><TabsTrigger value="worker-payments">Pagos a trabajadores</TabsTrigger><TabsTrigger value="financial-close">Cierre financiero</TabsTrigger></TabsList>
       {loadError && <Card className="border-destructive"><CardContent className="flex items-start gap-3 py-4"><AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" /><div><p className="font-semibold text-destructive">No fue posible cargar el modulo</p><p className="mt-1 text-sm text-muted-foreground">{loadError}</p><Button variant="outline" size="sm" className="mt-3" onClick={fetchData}>Reintentar</Button></div></CardContent></Card>}
 
