@@ -27,9 +27,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { FileText, Receipt, ArrowLeft, Trash2, ArrowRight, Calendar, Loader2, AlertCircle, PenLine } from "lucide-react"
+import { FileText, Receipt, ArrowLeft, Trash2, ArrowRight, Calendar, Loader2, AlertCircle, PenLine, BriefcaseBusiness, CheckCircle2 } from "lucide-react"
 import Link from "next/link"
-import type { Quotation, Invoice, FreeDocument } from "@/lib/database"
+import type { Client, FreeDocument, Invoice, Quotation, Worker } from "@/lib/database"
 import { generateInvoicePDF } from "@/lib/pdf-generator"
 import { formatDate, getCurrentDateInputValue } from "@/lib/dates"
 import { toast } from "@/hooks/use-toast"
@@ -44,6 +44,36 @@ function downloadCsv(filename: string, headers: string[], rows: Array<Array<stri
   link.download = filename
   link.click()
   URL.revokeObjectURL(url)
+}
+
+function formatMoney(value: number | string | null | undefined) {
+  const amount = Number(value)
+  const safeAmount = Number.isFinite(amount) ? amount : 0
+  const decimals = Number.isInteger(safeAmount) ? 0 : 2
+  return new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency: "COP",
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: 2,
+  }).format(safeAmount)
+}
+
+function quotationDescription(quotation: Quotation) {
+  return quotation.products
+    ?.map((product: any) => product.productName || product.description)
+    .filter(Boolean)
+    .join("; ") || ""
+}
+
+type QuotationJobForm = {
+  client_id: string
+  name: string
+  start_date: string
+  end_date: string
+  description: string
+  notes: string
+  advance_percentage: string
+  worker_ids: string[]
 }
 
 export function PortfolioView() {
@@ -61,6 +91,23 @@ export function PortfolioView() {
   const [paymentDate, setPaymentDate] = useState("")
   const [paymentMethod, setPaymentMethod] = useState("")
   const [searchTerm, setSearchTerm] = useState("")
+  const [approvalTarget, setApprovalTarget] = useState<Quotation | null>(null)
+  const [jobDialogOpen, setJobDialogOpen] = useState(false)
+  const [jobQuotation, setJobQuotation] = useState<Quotation | null>(null)
+  const [jobClients, setJobClients] = useState<Client[]>([])
+  const [jobWorkers, setJobWorkers] = useState<Worker[]>([])
+  const [jobFormLoading, setJobFormLoading] = useState(false)
+  const [jobSaving, setJobSaving] = useState(false)
+  const [jobForm, setJobForm] = useState<QuotationJobForm>({
+    client_id: "",
+    name: "",
+    start_date: "",
+    end_date: "",
+    description: "",
+    notes: "",
+    advance_percentage: "50.00",
+    worker_ids: [],
+  })
   const [deleteTarget, setDeleteTarget] = useState<{
     id: string
     type: "quotation" | "invoice" | "free-document"
@@ -101,6 +148,136 @@ export function PortfolioView() {
   useEffect(() => {
     fetchData()
   }, [fetchData])
+
+  const responseMessage = async (response: Response, fallback: string) => {
+    try {
+      const body = await response.json()
+      return body.error || fallback
+    } catch {
+      return fallback
+    }
+  }
+
+  const approveQuotation = async () => {
+    if (!approvalTarget) return
+
+    try {
+      const response = await fetch(`/api/quotations/${approvalTarget.id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "approved" }),
+      })
+      if (!response.ok) throw new Error(await responseMessage(response, "No se pudo aprobar la cotizacion"))
+
+      setApprovalTarget(null)
+      toast({ title: "Cotizacion aprobada", description: "Ahora puedes revisarla para crear un trabajo." })
+      await fetchData()
+    } catch (error) {
+      toast({
+        title: "No se pudo aprobar la cotizacion",
+        description: error instanceof Error ? error.message : "Error de red al aprobar la cotizacion.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  const openJobDialog = async (quotation: Quotation) => {
+    setJobQuotation(quotation)
+    setJobForm({
+      client_id: "",
+      name: quotation.client_name ? `Trabajo para ${quotation.client_name}` : "",
+      start_date: quotation.work_start_date || "",
+      end_date: quotation.work_end_date || "",
+      description: quotationDescription(quotation),
+      notes: quotation.observations || "",
+      advance_percentage: "50.00",
+      worker_ids: [],
+    })
+    setJobDialogOpen(true)
+    setJobFormLoading(true)
+
+    try {
+      const [clientsResponse, workersResponse] = await Promise.all([
+        fetch("/api/clients"),
+        fetch("/api/workers"),
+      ])
+      if (!clientsResponse.ok || !workersResponse.ok) {
+        throw new Error("No se pudieron cargar los clientes y trabajadores disponibles")
+      }
+      setJobClients(await clientsResponse.json())
+      setJobWorkers(await workersResponse.json())
+    } catch (error) {
+      setJobClients([])
+      setJobWorkers([])
+      toast({
+        title: "No se pudo preparar el formulario",
+        description: error instanceof Error ? error.message : "Error de red al cargar datos.",
+        variant: "destructive",
+      })
+    } finally {
+      setJobFormLoading(false)
+    }
+  }
+
+  const toggleInitialWorker = (workerId: string) => {
+    setJobForm((current) => ({
+      ...current,
+      worker_ids: current.worker_ids.includes(workerId)
+        ? current.worker_ids.filter((id) => id !== workerId)
+        : [...current.worker_ids, workerId],
+    }))
+  }
+
+  const createJobFromQuotation = async () => {
+    if (!jobQuotation) return
+    if (!jobForm.client_id) {
+      toast({ title: "Selecciona el cliente del trabajo", variant: "destructive" })
+      return
+    }
+    if (!jobForm.name.trim()) {
+      toast({ title: "Indica el nombre del trabajo", variant: "destructive" })
+      return
+    }
+
+    setJobSaving(true)
+    try {
+      const response = await fetch(`/api/quotations/${jobQuotation.id}/create-job`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_id: jobForm.client_id,
+          name: jobForm.name,
+          description: jobForm.description || null,
+          start_date: jobForm.start_date || null,
+          end_date: jobForm.end_date || null,
+          notes: jobForm.notes || null,
+          advance_percentage: jobForm.advance_percentage,
+          ...(jobForm.worker_ids.length > 0 ? { worker_ids: jobForm.worker_ids } : {}),
+        }),
+      })
+      if (!response.ok) {
+        const message = await responseMessage(response, "No se pudo crear el trabajo")
+        if (response.status === 409) {
+          setJobDialogOpen(false)
+          await fetchData()
+        }
+        throw new Error(message)
+      }
+
+      setJobDialogOpen(false)
+      setJobQuotation(null)
+      toast({ title: "Trabajo creado", description: "La cotizacion conserva su estado Aprobada." })
+      await fetchData()
+    } catch (error) {
+      toast({
+        title: "No se pudo crear el trabajo",
+        description: error instanceof Error ? error.message : "Error de red al crear el trabajo.",
+        variant: "destructive",
+      })
+    } finally {
+      setJobSaving(false)
+    }
+  }
 
   const matchesSearch = (...values: Array<string | number | null | undefined>) => {
     const term = searchTerm.trim().toLocaleLowerCase("es-CO")
@@ -244,13 +421,17 @@ export function PortfolioView() {
       }
       const response = await fetch(endpoints[type], { method: "DELETE" })
 
-      if (!response.ok) throw new Error("Error al eliminar")
+      if (!response.ok) throw new Error(await responseMessage(response, "No se pudo eliminar el registro"))
 
       toast({ title: "Registro eliminado" })
       fetchData()
     } catch (error) {
       console.error("Error:", error)
-      toast({ title: "No se pudo eliminar el registro", variant: "destructive" })
+      toast({
+        title: "No se pudo eliminar el registro",
+        description: error instanceof Error ? error.message : "Error de red al eliminar el registro.",
+        variant: "destructive",
+      })
     }
   }
 
@@ -374,7 +555,7 @@ export function PortfolioView() {
                         <TableRow key={quotation.id}>
                           <TableCell>{formatDate(quotation.created_at)}</TableCell>
                           <TableCell className="font-medium">{quotation.client_name}</TableCell>
-                          <TableCell>${quotation.total.toLocaleString("es-CO")}</TableCell>
+                          <TableCell>{formatMoney(quotation.total)}</TableCell>
                           <TableCell>{getStatusBadge(quotation.status)}</TableCell>
                           <TableCell>
                             {quotation.work_start_date && quotation.work_end_date ? (
@@ -387,19 +568,44 @@ export function PortfolioView() {
                             )}
                           </TableCell>
                           <TableCell className="text-right">
-                            <div className="flex justify-end gap-2">
+                            <div className="flex flex-wrap justify-end gap-2">
+                              {quotation.status === "pending" && (
+                                <Button size="sm" variant="outline" onClick={() => setApprovalTarget(quotation)}>
+                                  <CheckCircle2 className="mr-1 h-3 w-3" />Aprobar cotizacion
+                                </Button>
+                              )}
+                              {quotation.status === "approved" && !quotation.has_job && (
+                                <Button size="sm" onClick={() => void openJobDialog(quotation)}>
+                                  <BriefcaseBusiness className="mr-1 h-3 w-3" />Crear trabajo
+                                </Button>
+                              )}
+                              {quotation.has_job && quotation.job_id && (
+                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                  <Badge variant="secondary">Trabajo creado</Badge>
+                                  <Button size="sm" variant="outline" asChild>
+                                    <Link href={`/trabajadores-trabajos?job=${encodeURIComponent(quotation.job_id)}`}>
+                                      <BriefcaseBusiness className="mr-1 h-3 w-3" />Ver trabajo
+                                    </Link>
+                                  </Button>
+                                </div>
+                              )}
                               {quotation.status !== "converted" && (
                                 <Button size="sm" onClick={() => handleConvertToInvoice(quotation)}>
                                   <ArrowRight className="mr-1 h-3 w-3" />A Cuenta de Cobro
                                 </Button>
                               )}
-                              <Button
-                                size="sm"
-                                variant="destructive"
-                                onClick={() => setDeleteTarget({ id: quotation.id, type: "quotation" })}
-                              >
-                                <Trash2 className="h-3 w-3" />
-                              </Button>
+                              {quotation.has_job ? (
+                                <span className="text-xs text-muted-foreground">La cotizacion esta vinculada a un trabajo.</span>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  aria-label={`Eliminar cotizacion de ${quotation.client_name}`}
+                                  onClick={() => setDeleteTarget({ id: quotation.id, type: "quotation" })}
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </Button>
+                              )}
                             </div>
                           </TableCell>
                         </TableRow>
@@ -574,6 +780,109 @@ export function PortfolioView() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <AlertDialog open={Boolean(approvalTarget)} onOpenChange={(open) => !open && setApprovalTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Aprobar esta cotizacion?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Al aprobarla podras revisarla y usarla para crear un trabajo. La aprobacion no crea un trabajo automaticamente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void approveQuotation()}>Aprobar cotizacion</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog open={jobDialogOpen} onOpenChange={setJobDialogOpen}>
+        <DialogContent className="max-h-[calc(100vh-2rem)] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Crear trabajo desde cotizacion</DialogTitle>
+            <DialogDescription>
+              Revisa los datos operativos antes de crear el trabajo. El valor acordado se toma de la cotizacion guardada.
+            </DialogDescription>
+          </DialogHeader>
+          {jobQuotation && (
+            <div className="space-y-5 py-2">
+              <div className="rounded-lg border bg-muted/40 p-3 text-sm">
+                <p>Cliente indicado en la cotizacion: <strong>{jobQuotation.client_name}</strong></p>
+                <p className="mt-1">Valor acordado: <strong>{formatMoney(jobQuotation.total)}</strong></p>
+              </div>
+
+              {jobFormLoading ? (
+                <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Cargando clientes y trabajadores...</div>
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    <Label htmlFor="quotation-job-client">Cliente del trabajo *</Label>
+                    <select
+                      id="quotation-job-client"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      value={jobForm.client_id}
+                      onChange={(event) => setJobForm({ ...jobForm, client_id: event.target.value })}
+                    >
+                      <option value="">Selecciona un cliente existente</option>
+                      {jobClients.map((client) => <option key={client.id} value={client.id}>{client.name}{client.nit ? ` - ${client.nit}` : ""}</option>)}
+                    </select>
+                    <p className="text-xs text-muted-foreground">La seleccion es obligatoria y no se infiere de los datos textuales de la cotizacion.</p>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2 sm:col-span-2">
+                      <Label htmlFor="quotation-job-name">Nombre del trabajo *</Label>
+                      <Input id="quotation-job-name" value={jobForm.name} onChange={(event) => setJobForm({ ...jobForm, name: event.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="quotation-job-start">Fecha inicial</Label>
+                      <Input id="quotation-job-start" type="date" value={jobForm.start_date} onChange={(event) => setJobForm({ ...jobForm, start_date: event.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="quotation-job-end">Fecha de finalizacion</Label>
+                      <Input id="quotation-job-end" type="date" value={jobForm.end_date} onChange={(event) => setJobForm({ ...jobForm, end_date: event.target.value })} />
+                    </div>
+                    <div className="space-y-2 sm:col-span-2">
+                      <Label htmlFor="quotation-job-description">Descripcion</Label>
+                      <Textarea id="quotation-job-description" rows={3} value={jobForm.description} onChange={(event) => setJobForm({ ...jobForm, description: event.target.value })} />
+                    </div>
+                    <div className="space-y-2 sm:col-span-2">
+                      <Label htmlFor="quotation-job-notes">Notas</Label>
+                      <Textarea id="quotation-job-notes" rows={3} value={jobForm.notes} onChange={(event) => setJobForm({ ...jobForm, notes: event.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="quotation-job-advance">Anticipo esperado (%)</Label>
+                      <Input id="quotation-job-advance" type="number" min="0" max="100" step="0.01" inputMode="decimal" value={jobForm.advance_percentage} onChange={(event) => setJobForm({ ...jobForm, advance_percentage: event.target.value })} />
+                    </div>
+                  </div>
+
+                  <fieldset className="space-y-3 rounded-lg border p-4">
+                    <legend className="px-1 text-sm font-medium">Trabajadores iniciales (opcional)</legend>
+                    {jobWorkers.filter((worker) => worker.is_active).length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No hay trabajadores activos disponibles.</p>
+                    ) : (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {jobWorkers.filter((worker) => worker.is_active).map((worker) => (
+                          <label key={worker.id} className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1 text-sm">
+                            <input type="checkbox" checked={jobForm.worker_ids.includes(worker.id)} onChange={() => toggleInitialWorker(worker.id)} />
+                            <span>{worker.name} <span className="text-muted-foreground">({worker.job_title})</span></span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </fieldset>
+                </>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setJobDialogOpen(false)}>Cancelar</Button>
+            <Button onClick={() => void createJobFromQuotation()} disabled={jobFormLoading || jobSaving}>
+              <BriefcaseBusiness className="mr-2 h-4 w-4" />{jobSaving ? "Creando..." : "Crear trabajo"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={convertDialogOpen} onOpenChange={setConvertDialogOpen}>
         <DialogContent className="max-w-2xl">
